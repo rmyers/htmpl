@@ -14,6 +14,7 @@ from thtml.forms import (
     _label_from_name,
     _infer_input_type,
 )
+from thtml.elements import button, form, div, h3
 
 
 # Test models
@@ -35,8 +36,7 @@ class FullForm(BaseModel):
     email: EmailStr = Field(title="Email Address")
     password: str = Field(min_length=8)
     bio: str = Field(
-        default="",
-        json_schema_extra={"form_widget": "textarea", "rows": 6},
+        default="", json_schema_extra={"form_widget": "textarea", "rows": 6}
     )
     role: Literal["admin", "user", "guest"] = Field(default="user")
     agree: bool = Field(default=False, title="I agree to terms")
@@ -126,7 +126,7 @@ class TestFieldConfig:
         renderer = FormRenderer(FullForm)
 
         bio_cfg = renderer.field_configs["bio"]
-        assert bio_cfg.widget == "textarea", renderer.field_configs["bio"]
+        assert bio_cfg.widget == "textarea"
         assert bio_cfg.rows == 6
 
     def test_literal_creates_choices(self):
@@ -391,3 +391,115 @@ class TestEmailInference:
         html = await element.__html__()
 
         assert 'type="email"' in html
+
+
+class TestCustomLayout:
+    @pytest.mark.asyncio
+    async def test_input_only(self):
+        renderer = FormRenderer(SimpleForm)
+        element = renderer.input("name", value="Bob")
+
+        html = await element.__html__()
+
+        assert "<input" in html
+        assert 'value="Bob"' in html
+        assert 'id="name"' in html
+        assert "<label>" not in html
+
+    @pytest.mark.asyncio
+    async def test_input_with_extra_attrs(self):
+        renderer = FormRenderer(SimpleForm)
+        element = renderer.input("name", class_="custom", data_test="value")
+
+        html = await element.__html__()
+
+        assert 'class="custom"' in html
+        assert 'data-test="value"' in html
+
+    @pytest.mark.asyncio
+    async def test_label_for(self):
+        renderer = FormRenderer(FullForm)
+        element = renderer.label_for("email")
+
+        html = await element.__html__()
+
+        assert "<label" in html
+        assert 'for="email"' in html
+        assert "Email Address" in html
+
+    @pytest.mark.asyncio
+    async def test_error_for_with_error(self):
+        renderer = FormRenderer(SimpleForm)
+        element = renderer.error_for("name", {"name": "Required"})
+
+        html = await element.__html__()
+
+        assert "Required" in html
+        assert 'class="error"' in html
+
+    @pytest.mark.asyncio
+    async def test_error_for_without_error(self):
+        renderer = FormRenderer(SimpleForm)
+        element = renderer.error_for("name", {})
+
+        assert element is None
+
+    @pytest.mark.asyncio
+    async def test_fields_list(self):
+        renderer = FormRenderer(SimpleForm)
+        elements = renderer.fields("name", "email", values={"name": "Bob"})
+
+        assert len(elements) == 2
+
+        html = await elements[0].__html__()
+        assert 'name="name"' in html
+        assert 'value="Bob"' in html
+
+    @pytest.mark.asyncio
+    async def test_inline_fields(self):
+        renderer = FormRenderer(SimpleForm)
+        element = renderer.inline("name", "email")
+
+        html = await element.__html__()
+
+        assert 'class="grid"' in html
+        assert 'name="name"' in html
+        assert 'name="email"' in html
+
+    @pytest.mark.asyncio
+    async def test_group_fields(self):
+        renderer = FormRenderer(FullForm)
+        element = renderer.group("Account Info", "name", "email")
+
+        html = await element.__html__()
+
+        assert "<fieldset>" in html
+        assert "<legend>" in html
+        assert "Account Info" in html
+        assert 'name="name"' in html
+        assert 'name="email"' in html
+
+    @pytest.mark.asyncio
+    async def test_custom_form_layout(self):
+        """Test building a completely custom form layout."""
+        renderer = FormRenderer(FullForm)
+        values = {"name": "Bob", "email": "bob@test.com"}
+        errors = {"password": "Too short"}
+
+        custom_form = form(
+            h3("Personal Info"),
+            renderer.inline("name", "email", values=values),
+            h3("Security"),
+            renderer.render_field("password", error=errors.get("password")),
+            renderer.render_field("agree"),
+            button("Submit", type="submit"),
+            action="/submit",
+        )
+
+        html = await custom_form.__html__()
+
+        assert "Personal Info" in html
+        assert "Security" in html
+        assert 'value="Bob"' in html
+        assert "Too short" in html
+        assert 'aria-invalid="true"' in html

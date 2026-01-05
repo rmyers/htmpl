@@ -27,16 +27,17 @@ from pydantic_core import PydanticUndefined
 
 from .elements import (
     Element,
-    form,
-    label,
-    input_,
-    select,
-    option,
-    textarea,
     button,
-    small,
+    div,
     fieldset,
+    form,
+    input_,
+    label,
     legend,
+    option,
+    select,
+    small,
+    textarea,
 )
 
 
@@ -125,9 +126,7 @@ def _extract_field_config(
         annotation = args[0] if args else str
 
     choices: Choices | None = None
-    print(origin)
     if origin is Literal:
-        print("I am literally here")
         args = get_args(annotation)
         choices = [[str(a), str(a)] for a in args]
 
@@ -246,11 +245,198 @@ class FormRenderer:
         value: Any = None,
         error: str | None = None,
     ) -> Element:
-        """Render a single field by name."""
+        """Render a single field with label wrapper."""
         cfg = self.field_configs.get(name)
         if not cfg:
             raise ValueError(f"Unknown field: {name}")
         return self._render_field(cfg, value, error)
+
+    def input(
+        self,
+        name: str,
+        value: Any = None,
+        error: str | None = None,
+        **attrs,
+    ) -> Element:
+        """Render just the input element, no label wrapper."""
+        cfg = self.field_configs.get(name)
+        if not cfg:
+            raise ValueError(f"Unknown field: {name}")
+        return self._render_input_only(cfg, value, error, attrs)
+
+    def label_for(self, name: str) -> Element:
+        """Render just the label element for a field."""
+        cfg = self.field_configs.get(name)
+        if not cfg:
+            raise ValueError(f"Unknown field: {name}")
+        return label(cfg.label, for_=name)
+
+    def error_for(
+        self, name: str, errors: dict[str, str] | None = None
+    ) -> Element | None:
+        """Render error message for a field if present."""
+        if not errors or name not in errors:
+            return None
+        return small(errors[name], id=f"{name}-error", class_="error")
+
+    def fields(
+        self,
+        *names: str,
+        values: dict[str, Any] | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> list[Element]:
+        """Render multiple fields as a list."""
+        values = values or {}
+        errors = errors or {}
+        return [
+            self.render_field(name, values.get(name), errors.get(name))
+            for name in names
+        ]
+
+    def inline(
+        self,
+        *names: str,
+        values: dict[str, Any] | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> Element:
+        """Render fields inline in a grid row."""
+        return div(
+            self.fields(*names, values=values, errors=errors),
+            class_="grid",
+        )
+
+    def group(
+        self,
+        title: str,
+        *names: str,
+        values: dict[str, Any] | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> Element:
+        """Render fields in a fieldset with legend."""
+        return fieldset(
+            legend(title),
+            *self.fields(*names, values=values, errors=errors),
+        )
+
+    def _render_input_only(
+        self,
+        cfg: FieldConfig,
+        value: Any,
+        error: str | None,
+        extra_attrs: dict[str, Any],
+    ) -> Element:
+        """Render just the input/select/textarea element."""
+        match cfg.widget:
+            case "select":
+                return self._render_select_input(cfg, value, error, extra_attrs)
+            case "textarea":
+                return self._render_textarea_input(cfg, value, error, extra_attrs)
+            case "checkbox":
+                return self._render_checkbox_input(cfg, value, error, extra_attrs)
+            case "hidden":
+                return input_(
+                    type="hidden", name=cfg.name, value=str(value or ""), **extra_attrs
+                )
+            case _:
+                return self._render_input_element(cfg, value, error, extra_attrs)
+
+    def _render_input_element(
+        self,
+        cfg: FieldConfig,
+        value: Any,
+        error: str | None,
+        extra_attrs: dict[str, Any],
+    ) -> Element:
+        """Render an <input> element."""
+        attrs: dict[str, Any] = {
+            "type": cfg.type,
+            "name": cfg.name,
+            "id": cfg.name,
+            "value": str(value) if value is not None else "",
+            "placeholder": cfg.placeholder or None,
+            "required": cfg.required or None,
+            "minlength": str(cfg.minlength) if cfg.minlength else None,
+            "maxlength": str(cfg.maxlength) if cfg.maxlength else None,
+            "min": str(cfg.min) if cfg.min is not None else None,
+            "max": str(cfg.max) if cfg.max is not None else None,
+            "pattern": cfg.pattern,
+            "step": str(cfg.step) if cfg.step else None,
+            **extra_attrs,
+        }
+        if error:
+            attrs["aria-invalid"] = "true"
+            attrs["aria-describedby"] = f"{cfg.name}-error"
+        return input_(**{k: v for k, v in attrs.items() if v is not None})
+
+    def _render_textarea_input(
+        self,
+        cfg: FieldConfig,
+        value: Any,
+        error: str | None,
+        extra_attrs: dict[str, Any],
+    ) -> Element:
+        """Render a <textarea> element."""
+        attrs: dict[str, Any] = {
+            "name": cfg.name,
+            "id": cfg.name,
+            "placeholder": cfg.placeholder or None,
+            "required": cfg.required or None,
+            "rows": str(cfg.rows),
+            "minlength": str(cfg.minlength) if cfg.minlength else None,
+            "maxlength": str(cfg.maxlength) if cfg.maxlength else None,
+            **extra_attrs,
+        }
+        if error:
+            attrs["aria-invalid"] = "true"
+        return textarea(
+            str(value or ""), **{k: v for k, v in attrs.items() if v is not None}
+        )
+
+    def _render_select_input(
+        self,
+        cfg: FieldConfig,
+        value: Any,
+        error: str | None,
+        extra_attrs: dict[str, Any],
+    ) -> Element:
+        """Render a <select> element."""
+        str_value = str(value) if value is not None else ""
+        options = [
+            option(lbl, value=val, selected=(val == str_value) or None)
+            for val, lbl in (cfg.choices or [])
+        ]
+        attrs: dict[str, Any] = {
+            "name": cfg.name,
+            "id": cfg.name,
+            "required": cfg.required or None,
+            **extra_attrs,
+        }
+        if error:
+            attrs["aria-invalid"] = "true"
+        return select(
+            option(
+                "Select...", value="", disabled=True, selected=(not str_value) or None
+            ),
+            *options,
+            **{k: v for k, v in attrs.items() if v is not None},
+        )
+
+    def _render_checkbox_input(
+        self,
+        cfg: FieldConfig,
+        value: Any,
+        error: str | None,
+        extra_attrs: dict[str, Any],
+    ) -> Element:
+        """Render a checkbox <input> element."""
+        return input_(
+            type="checkbox",
+            name=cfg.name,
+            id=cfg.name,
+            checked=bool(value) or None,
+            required=cfg.required or None,
+            **extra_attrs,
+        )
 
     def _render_field(self, cfg: FieldConfig, value: Any, error: str | None) -> Element:
         """Render a field based on its configuration."""
@@ -269,82 +455,27 @@ class FormRenderer:
                 return self._render_input(cfg, value, error)
 
     def _render_input(self, cfg: FieldConfig, value: Any, error: str | None) -> Element:
-        attrs: dict[str, Any] = {
-            "type": cfg.type,
-            "name": cfg.name,
-            "value": str(value) if value is not None else "",
-            "placeholder": cfg.placeholder or None,
-            "required": cfg.required or None,
-            "minlength": str(cfg.minlength) if cfg.minlength else None,
-            "maxlength": str(cfg.maxlength) if cfg.maxlength else None,
-            "min": str(cfg.min) if cfg.min is not None else None,
-            "max": str(cfg.max) if cfg.max is not None else None,
-            "pattern": cfg.pattern,
-            "step": str(cfg.step) if cfg.step else None,
-        }
-
-        if error:
-            attrs["aria-invalid"] = "true"
-            attrs["aria-describedby"] = f"{cfg.name}-error"
-
-        # Filter None values
-        attrs = {k: v for k, v in attrs.items() if v is not None}
-
         return label(
             cfg.label,
-            input_(**attrs),
+            self._render_input_element(cfg, value, error, {}),
             small(error, id=f"{cfg.name}-error", class_="error") if error else None,
         )
 
     def _render_textarea(
         self, cfg: FieldConfig, value: Any, error: str | None
     ) -> Element:
-        attrs: dict[str, Any] = {
-            "name": cfg.name,
-            "placeholder": cfg.placeholder or None,
-            "required": cfg.required or None,
-            "rows": str(cfg.rows),
-            "minlength": str(cfg.minlength) if cfg.minlength else None,
-            "maxlength": str(cfg.maxlength) if cfg.maxlength else None,
-        }
-        if error:
-            attrs["aria-invalid"] = "true"
-
-        attrs = {k: v for k, v in attrs.items() if v is not None}
-
         return label(
             cfg.label,
-            textarea(str(value or ""), **attrs),
+            self._render_textarea_input(cfg, value, error, {}),
             small(error, class_="error") if error else None,
         )
 
     def _render_select(
         self, cfg: FieldConfig, value: Any, error: str | None
     ) -> Element:
-        str_value = str(value) if value is not None else ""
-        options = [
-            option(lbl, value=val, selected=(val == str_value) or None)
-            for val, lbl in (cfg.choices or [])
-        ]
-
-        attrs: dict[str, Any] = {"name": cfg.name, "required": cfg.required or None}
-        if error:
-            attrs["aria-invalid"] = "true"
-
-        attrs = {k: v for k, v in attrs.items() if v is not None}
-
         return label(
             cfg.label,
-            select(
-                option(
-                    "Select...",
-                    value="",
-                    disabled=True,
-                    selected=(not str_value) or None,
-                ),
-                *options,
-                **attrs,
-            ),
+            self._render_select_input(cfg, value, error, {}),
             small(error, class_="error") if error else None,
         )
 
@@ -352,12 +483,7 @@ class FormRenderer:
         self, cfg: FieldConfig, value: Any, error: str | None
     ) -> Element:
         return label(
-            input_(
-                type="checkbox",
-                name=cfg.name,
-                checked=bool(value) or None,
-                required=cfg.required or None,
-            ),
+            self._render_checkbox_input(cfg, value, error, {}),
             cfg.label,
             small(error, class_="error") if error else None,
         )
@@ -369,6 +495,7 @@ class FormRenderer:
                 input_(
                     type="radio",
                     name=cfg.name,
+                    id=f"{cfg.name}_{val}",
                     value=val,
                     checked=(val == str_value) or None,
                     required=cfg.required or None,
@@ -377,6 +504,7 @@ class FormRenderer:
             )
             for val, lbl in (cfg.choices or [])
         ]
+
         return fieldset(
             legend(cfg.label),
             *radios,

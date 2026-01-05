@@ -93,7 +93,7 @@ async def html(template: Template) -> SafeHTML:
                 rendered = await _render_value(value, conversion, format_spec)
                 parts.append(rendered)
 
-    return SafeHTML("".join(parts))
+    return SafeHTML("".join(parts).strip())
 
 
 async def _render_value(value: Any, conversion: str | None, format_spec: str) -> str:

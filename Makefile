@@ -93,6 +93,9 @@ pre-commit:  ## Run pre-commit on the repo
 dev: ## Run example
 	$(conda_run) python examples/app.py
 
+dev-forms: ## Run example
+	$(conda_run) python examples/forms.py
+
 repl:  ## Get a python repl that is configured properly
 	$(conda_run) python
 
