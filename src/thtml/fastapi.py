@@ -6,11 +6,14 @@ from __future__ import annotations
 
 from typing import Callable, Awaitable
 from functools import wraps
+from inspect import isawaitable
+from string.templatelib import Template
+from typing import Callable, Awaitable
 
 from fastapi import Request, Response
 from fastapi.responses import HTMLResponse
 
-from .core import SafeHTML
+from .core import SafeHTML, html
 from .elements import Element, Fragment
 
 
@@ -30,32 +33,43 @@ class THtmlResponse(HTMLResponse):
         )
 
 
+Renderable = SafeHTML | Element | Fragment | Template
+
+
 def html_response(
-    func: Callable[
-        ..., SafeHTML | Element | Fragment | Awaitable[SafeHTML | Element | Fragment]
-    ],
+    func: Callable[..., Renderable | Awaitable[Renderable]],
 ) -> Callable[..., Awaitable[THtmlResponse]]:
     """
-    Decorator that converts SafeHTML/Element return value to THtmlResponse.
+    Decorator that renders SafeHTML/Element/Template to THtmlResponse.
 
     Usage:
         @app.get("/")
         @html_response
-        async def home(request: Request) -> Element:
+        async def home() -> Element:
             return section(h1("Hello"))
+
+        @app.get("/page")
+        @html_response
+        async def page(name: str) -> Template:
+            return t"<h1>Hello {name}</h1>"
     """
 
     @wraps(func)
     async def wrapper(*args, **kwargs) -> THtmlResponse:
         result = func(*args, **kwargs)
-        if hasattr(result, "__await__"):
+        if isawaitable(result):
             result = await result
 
-        # Render Element/Fragment to SafeHTML
+        # Element/Fragment -> render async __html__
         if isinstance(result, (Element, Fragment)):
             content = await result.__html__()
             return THtmlResponse(SafeHTML(content))
 
+        # Template -> process with html()
+        if isinstance(result, Template):
+            return THtmlResponse(await html(result))
+
+        # SafeHTML -> use directly
         return THtmlResponse(result)
 
     return wrapper

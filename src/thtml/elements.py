@@ -6,7 +6,7 @@ Usage:
 
     section(
         h1("Welcome"),
-        p("Hello world", class_="intro"),
+        t"<p>Hello {name}</p>",  # t-strings work as children
         div(
             button("Click me", type="button"),
             class_="actions"
@@ -19,6 +19,8 @@ Usage:
 from __future__ import annotations
 
 from html import escape
+from inspect import isawaitable
+from string.templatelib import Template, Interpolation
 from typing import Any
 
 from .core import SafeHTML, attr
@@ -67,7 +69,7 @@ async def _render_children(children: tuple[Any, ...]) -> str:
             continue
 
         # Await coroutines
-        if hasattr(child, "__await__"):
+        if isawaitable(child):
             child = await child
         if child is None:
             continue
@@ -78,13 +80,16 @@ async def _render_children(children: tuple[Any, ...]) -> str:
         # Elements render recursively
         elif isinstance(child, Element):
             parts.append(await child.__html__())
+        # t-strings process inline
+        elif isinstance(child, Template):
+            parts.append(await _render_template(child))
         # Strings get escaped
         elif isinstance(child, str):
             parts.append(escape(child))
         # Objects with __html__ (sync or async)
         elif hasattr(child, "__html__"):
             result = child.__html__()
-            if hasattr(result, "__await__"):
+            if isawaitable(result):
                 result = await result
             parts.append(result)
         # Iterables flatten (but not strings)
@@ -95,6 +100,17 @@ async def _render_children(children: tuple[Any, ...]) -> str:
         else:
             parts.append(escape(str(child)))
 
+    return "".join(parts)
+
+
+async def _render_template(template: Template) -> str:
+    """Render a t-string template with escaping."""
+    parts = []
+    for item in template:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, Interpolation):
+            parts.append(await _render_children((item.value,)))
     return "".join(parts)
 
 

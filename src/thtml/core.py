@@ -9,7 +9,7 @@ from collections.abc import AsyncIterable, Awaitable, Iterable
 from dataclasses import dataclass
 from functools import wraps
 from html import escape
-from inspect import iscoroutine, isasyncgen
+from inspect import isasyncgen, isawaitable
 from string.templatelib import Template, Interpolation
 from typing import Protocol, runtime_checkable, Any, Callable, TypeVar
 
@@ -100,7 +100,7 @@ async def _render_value(value: Any, conversion: str | None, format_spec: str) ->
     """Render a single interpolated value, awaiting if necessary."""
 
     # Await coroutines first
-    if iscoroutine(value):
+    if isawaitable(value):
         value = await value
 
     # None renders as nothing
@@ -110,7 +110,7 @@ async def _render_value(value: Any, conversion: str | None, format_spec: str) ->
     # Renderable objects (sync or async)
     if hasattr(value, "__html__"):
         result = value.__html__()
-        if iscoroutine(result):
+        if isawaitable(result):
             return await result
         return result
 
