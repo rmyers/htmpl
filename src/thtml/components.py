@@ -19,7 +19,7 @@ async def Document(
     title: str,
     children: SafeHTML,
     *,
-    theme: Theme = "auto",
+    theme: Theme = "dark",
     description: str | None = None,
     head: SafeHTML | None = None,
     scripts: SafeHTML | None = None,

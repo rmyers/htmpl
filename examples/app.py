@@ -22,7 +22,7 @@ from thtml.htmx import HX, HtmxScripts, SearchInput, LazyLoad
 from thtml.components import Document, LucideScripts
 
 
-app = FastAPI()
+app = FastAPI(debug=True)
 
 
 # Models
@@ -86,12 +86,15 @@ async def get_user_repos(user_id: int):
 async def AppPage(title: str, children, user: User | None = None, scripts=None) -> SafeHTML:
     return await Document(
         title=f"{title} | Julython",
-        children=await html(t'{AppNav(user)}{main(children, class_="container")}'),
-        scripts=await html(t'{HtmxScripts()}{LucideScripts()}{scripts}'),
+        children=AppMain(user, children),
+        scripts=html(t'{HtmxScripts()}{LucideScripts()}{scripts}'),
     )
 
+async def AppMain(user: User | None, children):
+    not_user = "fake"
+    return fragment(t"{AppNav(user)}{main(children)}")
 
-def AppNav(user: User | None):
+async def AppNav(user: User | None):
     items = [("Leaderboard", "/board"), ("Projects", "/projects"), ("About", "/about")]
 
     if user:
@@ -242,7 +245,7 @@ async def leaderboard(request: Request, q: str = "") -> SafeHTML:
 
     if is_htmx(request):
         rows = fragment(*[LeaderboardRow(u, i + 1) for i, u in enumerate(users)])
-        return SafeHTML(await rows.__html__())
+        return SafeHTML(rows)
 
     user = await get_current_user()
     return await AppPage(
@@ -328,4 +331,4 @@ async def settings() -> SafeHTML:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
