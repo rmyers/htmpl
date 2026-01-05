@@ -31,13 +31,16 @@ app_dir ?= $(shell git rev-parse --show-prefix)
 conda_env_dir ?= $(base_dir)/env
 
 # Export environment variables
-export PYTHONPATH = ./
+export PYTHONPATH = ./src
 
 # Setup conda lock
 CONDA_EXE ?= conda
 CONDA_LOCK := $(CONDA_EXE) lock
 CONDA_LOCK_FILE ?= conda-lock.yml
-CONDA_LOCK_EXTRAS ?= "dev,docs"
+CONDA_LOCK_EXTRAS ?= "dev,fastapi"
+# Commands
+conda_run := $(CONDA_EXE) run --live-stream --prefix $(conda_env_dir)
+
 
 check-env:
 	@if [ -z "$(CONDA_EXE)" ]; then \
@@ -58,7 +61,7 @@ lock-force: check-env  ## Force lock Conda dependencies in project
 	$(CONDA_LOCK) --file pyproject.toml --extras $(CONDA_LOCK_EXTRAS)
 
 setup: check-env $(CONDA_LOCK_FILE)  ## Setup local environment
-	$(CONDA_LOCK) install --log-level ERROR -p $(conda_env_dir) $(CONDA_LOCK_FILE)
+	$(CONDA_LOCK) install -E fastapi --log-level ERROR -p $(conda_env_dir) $(CONDA_LOCK_FILE)
 
 type-check:  ## Run mypy to check static types
 	$(conda_run) mypy $(args)
@@ -86,6 +89,9 @@ install-hooks:  ## Install pre-commit hooks
 
 pre-commit:  ## Run pre-commit on the repo
 	pre-commit run --verbose --show-diff-on-failure --color=always --all-files
+
+dev: ## Run example
+	$(conda_run) python examples/app.py
 
 repl:  ## Get a python repl that is configured properly
 	$(conda_run) python

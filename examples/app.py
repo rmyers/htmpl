@@ -211,7 +211,7 @@ async def GlobalStatsBar() -> SafeHTML:
 
 # Routes
 
-@app.get("/")
+@app.get("/", response_model=None)
 @html_response
 async def home() -> SafeHTML:
     user = await get_current_user()
@@ -235,7 +235,7 @@ async def home() -> SafeHTML:
     )
 
 
-@app.get("/board")
+@app.get("/board", response_model=None)
 @html_response
 async def leaderboard(request: Request, q: str = "") -> SafeHTML:
     users = await get_leaderboard(q)
@@ -290,7 +290,7 @@ async def dashboard() -> SafeHTML:
     )
 
 
-@app.get("/api/commits/recent")
+@app.get("/api/commits/recent", response_model=None)
 @html_response
 async def recent_commits() -> Fragment:
     user = await get_current_user()
