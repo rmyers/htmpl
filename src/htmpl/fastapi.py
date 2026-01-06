@@ -1,5 +1,5 @@
 """
-FastAPI integration for thtml.
+FastAPI integration for htmpl.
 """
 
 from __future__ import annotations

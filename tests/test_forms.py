@@ -1,5 +1,5 @@
 """
-Tests for thtml form handling.
+Tests for htmpl form handling.
 """
 
 from typing import Literal
@@ -7,14 +7,14 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel, Field, ValidationError, EmailStr
 
-from thtml.forms import (
+from htmpl.forms import (
     FormRenderer,
     FieldConfig,
     parse_form_errors,
     _label_from_name,
     _infer_input_type,
 )
-from thtml.elements import button, form, div, h3
+from htmpl.elements import button, form, div, h3
 
 
 # Test models

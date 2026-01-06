@@ -1,20 +1,20 @@
 """
-Tests for thtml components.
+Tests for htmpl components.
 """
 
 import pytest
-from thtml.components import (
+from htmpl.components import (
     Document, Page, Nav, NavLink, Dropdown,
     Card, Grid, HGroup,
     Form, Field, TextArea, Select, Checkbox, Button, ButtonLink,
     Alert, Modal, Table, Loading,
 )
+from htmpl import html
 
 
 class TestLayout:
     @pytest.mark.asyncio
     async def test_document_minimal(self):
-        from thtml import html
         result = await Document("Test", await html(t"<p>content</p>"))
         assert "<!DOCTYPE html>" in result.content
         assert "<title>Test</title>" in result.content
@@ -23,20 +23,17 @@ class TestLayout:
 
     @pytest.mark.asyncio
     async def test_document_with_theme(self):
-        from thtml import html
         result = await Document("Test", await html(t""), theme="dark")
         assert 'data-theme="dark"' in result.content
 
     @pytest.mark.asyncio
     async def test_document_with_description(self):
-        from thtml import html
         result = await Document("Test", await html(t""), description="A test page")
         assert 'name="description"' in result.content
         assert 'content="A test page"' in result.content
 
     @pytest.mark.asyncio
     async def test_page_with_nav(self):
-        from thtml import html
         nav = await html(t"<nav>navigation</nav>")
         result = await Page("Test", await html(t"<p>body</p>"), nav=nav)
         assert "<nav>navigation</nav>" in result.content
@@ -72,32 +69,27 @@ class TestNavigation:
 class TestCards:
     @pytest.mark.asyncio
     async def test_card_basic(self):
-        from thtml import html
         result = await Card(await html(t"<p>content</p>"))
         assert "<article>" in result.content
         assert "<p>content</p>" in result.content
 
     @pytest.mark.asyncio
     async def test_card_with_title(self):
-        from thtml import html
         result = await Card(await html(t"body"), title="Title")
         assert "<header>Title</header>" in result.content
 
     @pytest.mark.asyncio
     async def test_card_with_footer(self):
-        from thtml import html
         result = await Card(await html(t"body"), footer=await html(t"<button>OK</button>"))
         assert "<footer><button>OK</button></footer>" in result.content
 
     @pytest.mark.asyncio
     async def test_grid_basic(self):
-        from thtml import html
         result = await Grid(await html(t"<div>item</div>"))
         assert 'class="grid"' in result.content
 
     @pytest.mark.asyncio
     async def test_grid_auto(self):
-        from thtml import html
         result = await Grid(await html(t"<div>item</div>"), auto=True)
         assert 'class="grid grid-auto"' in result.content
 
@@ -112,14 +104,12 @@ class TestCards:
 class TestForms:
     @pytest.mark.asyncio
     async def test_form_basic(self):
-        from thtml import html
         result = await Form(await html(t"<input>"), action="/submit")
         assert 'action="/submit"' in result.content
         assert 'method="post"' in result.content
 
     @pytest.mark.asyncio
     async def test_form_get_method(self):
-        from thtml import html
         result = await Form(await html(t""), method="get")
         assert 'method="get"' in result.content
 
@@ -226,14 +216,12 @@ class TestFeedback:
 
     @pytest.mark.asyncio
     async def test_modal(self):
-        from thtml import html
         result = await Modal("my-modal", await html(t"<p>content</p>"), title="Title")
         assert '<dialog id="my-modal"' in result.content
         assert "<h3>Title</h3>" in result.content
 
     @pytest.mark.asyncio
     async def test_modal_open(self):
-        from thtml import html
         result = await Modal("m", await html(t""), open=True)
         assert "open" in result.content
 

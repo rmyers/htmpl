@@ -1,13 +1,13 @@
 """
-Tests for thtml FastAPI integration.
+Tests for htmpl FastAPI integration.
 """
 
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from thtml import html, SafeHTML
-from thtml.fastapi import (
+from htmpl import html, SafeHTML
+from htmpl.fastapi import (
     THtmlResponse,
     html_response,
     is_htmx,

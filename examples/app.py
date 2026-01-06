@@ -1,5 +1,5 @@
 """
-Example Julython-style app using thtml with Elements.
+Example Julython-style app using htmpl with Elements.
 """
 
 from __future__ import annotations
@@ -8,18 +8,18 @@ from dataclasses import dataclass
 
 from fastapi import FastAPI, Request
 
-from thtml import html, SafeHTML, Fragment, fragment
-from thtml.core import cached_ttl
-from thtml.elements import (
+from htmpl import html, SafeHTML, Fragment, fragment
+from htmpl.core import cached_ttl
+from htmpl.elements import (
     section, div, article, nav, ul, li, main,
     h1, h2, h3, p, a, strong, small,
     table, thead, tbody, tr, th, td,
     form, label, input_, button,
     details, summary,
 )
-from thtml.fastapi import html_response, is_htmx
-from thtml.htmx import HX, HtmxScripts, SearchInput, LazyLoad
-from thtml.components import Document, LucideScripts
+from htmpl.fastapi import html_response, is_htmx
+from htmpl.htmx import HX, HtmxScripts, SearchInput, LazyLoad
+from htmpl.components import Document, LucideScripts
 
 
 app = FastAPI(debug=True)

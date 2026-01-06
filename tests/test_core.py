@@ -1,9 +1,9 @@
 """
-Tests for thtml core functionality.
+Tests for htmpl core functionality.
 """
 
 import pytest
-from thtml import html, SafeHTML, raw, attr, cached, cached_lru, cached_ttl
+from htmpl import html, SafeHTML, raw, attr, cached, cached_lru, cached_ttl
 
 
 class TestSafeHTML:

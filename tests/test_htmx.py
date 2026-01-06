@@ -1,10 +1,10 @@
 """
-Tests for thtml HTMX helpers.
+Tests for htmpl HTMX helpers.
 """
 
 import pytest
-from thtml import html
-from thtml.htmx import (
+from htmpl import html
+from htmpl.htmx import (
     HX,
     HtmxScripts, HtmxExtension,
     LoadingButton, InfiniteScroll, LazyLoad, PollingContent, SearchInput, OobSwap,

@@ -1,9 +1,9 @@
 """
-Tests for thtml element factories.
+Tests for htmpl element factories.
 """
 
 import pytest
-from thtml.elements import (
+from htmpl.elements import (
     Element, Fragment, fragment,
     div, span, p, a, h1, h2,
     ul, li, table, tr, td, th,
@@ -121,7 +121,7 @@ class TestChildrenEscaping:
 
     @pytest.mark.asyncio
     async def test_safehtml_not_escaped(self):
-        from thtml import SafeHTML
+        from htmpl import SafeHTML
         el = div(SafeHTML("<strong>bold</strong>"))
         html = await el.__html__()
         assert "<strong>bold</strong>" in html

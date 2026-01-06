@@ -3,7 +3,7 @@ Pydantic-based form handling with HTML5 + server validation.
 
 Usage:
     from pydantic import BaseModel, Field, EmailStr
-    from thtml.forms import FormRenderer
+    from htmpl.forms import FormRenderer
 
     class SignupSchema(BaseModel):
         username: str = Field(min_length=3, max_length=20)

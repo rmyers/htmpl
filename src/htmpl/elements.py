@@ -2,7 +2,7 @@
 HTML element factories for pure-Python composition.
 
 Usage:
-    from thtml.elements import div, section, h1, p, a, button
+    from htmpl.elements import div, section, h1, p, a, button
 
     section(
         h1("Welcome"),
@@ -143,7 +143,7 @@ def _make_element(tag: str, void: bool = False):
 
 
 # Document structure
-html_el = _make_element("html")  # Avoid shadowing thtml.html
+html_el = _make_element("html")  # Avoid shadowing htmpl.html
 head = _make_element("head")
 body = _make_element("body")
 title = _make_element("title")

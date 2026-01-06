@@ -37,7 +37,7 @@ export PYTHONPATH = ./src
 CONDA_EXE ?= conda
 CONDA_LOCK := $(CONDA_EXE) lock
 CONDA_LOCK_FILE ?= conda-lock.yml
-CONDA_LOCK_EXTRAS ?= "dev,fastapi"
+CONDA_LOCK_EXTRAS ?= "dev,all"
 # Commands
 conda_run := $(CONDA_EXE) run --live-stream --prefix $(conda_env_dir)
 
@@ -61,7 +61,7 @@ lock-force: check-env  ## Force lock Conda dependencies in project
 	$(CONDA_LOCK) --file pyproject.toml --extras $(CONDA_LOCK_EXTRAS)
 
 setup: check-env $(CONDA_LOCK_FILE)  ## Setup local environment
-	$(CONDA_LOCK) install -E fastapi --log-level ERROR -p $(conda_env_dir) $(CONDA_LOCK_FILE)
+	$(CONDA_LOCK) install -E all --log-level ERROR -p $(conda_env_dir) $(CONDA_LOCK_FILE)
 
 type-check:  ## Run mypy to check static types
 	$(conda_run) mypy $(args)

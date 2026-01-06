@@ -1,5 +1,5 @@
 """
-Example form handling with Pydantic + thtml + HTMX.
+Example form handling with Pydantic + htmpl + HTMX.
 """
 
 from typing import Literal
@@ -7,11 +7,11 @@ from typing import Literal
 from fastapi import FastAPI, Request, Form
 from pydantic import BaseModel, Field, EmailStr, field_validator
 
-from thtml import html, SafeHTML
-from thtml.elements import button, section, h1, h2, p, div, article, form
-from thtml.forms import FormRenderer, parse_form_errors
-from thtml.fastapi import html_response
-from thtml.htmx import HX
+from htmpl import html, SafeHTML
+from htmpl.elements import button, section, h1, h2, p, div, article, form
+from htmpl.forms import FormRenderer, parse_form_errors
+from htmpl.fastapi import html_response
+from htmpl.htmx import HX
 
 
 app = FastAPI(debug=True)
