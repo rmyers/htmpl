@@ -19,7 +19,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dataclass_field
-from typing import Any, Literal, cast, get_origin, get_args
+from typing import Any, Generic, Literal, TypeVar, cast, get_origin, get_args
 
 from pydantic import BaseModel, ValidationError
 from pydantic.fields import FieldInfo
@@ -44,6 +44,7 @@ from .elements import (
 # Choices can be list of [value, label] pairs
 Choices = list[list[str | int | bool | float]]
 Widget = Literal["input", "textarea", "select", "checkbox", "radio", "hidden"]
+T = TypeVar("T", bound=BaseModel)
 
 
 class FieldConfig(BaseModel):
@@ -99,8 +100,6 @@ def _infer_input_type(python_type: type, field_name: str) -> str:
     name_lower = field_name.lower()
     if "password" in name_lower:
         return "password"
-    if "email" in name_lower:
-        return "email"
     if "url" in name_lower or "website" in name_lower:
         return "url"
     if "phone" in name_lower or "tel" in name_lower:
@@ -185,29 +184,45 @@ def _extract_field_config(
     )
 
 
-@dataclass
-class FormRenderer:
-    """Renders Pydantic models as HTML forms."""
+class BaseForm(BaseModel):
+    """
+    Base class for forms that can render themselves.
 
-    model: type[BaseModel]
-    field_configs: dict[str, FieldConfig] = dataclass_field(default_factory=dict)
+    Usage:
+        class LoginSchema(BaseForm):
+            email: EmailStr
+            password: str = Field(min_length=8)
 
-    def __post_init__(self):
-        for name, field_info in self.model.model_fields.items():
-            annotation = self.model.__annotations__.get(name, str)
-            self.field_configs[name] = _extract_field_config(
-                name, annotation, field_info
-            )
+        # Render the form (class method)
+        LoginSchema.render(action="/login", values=values, errors=errors)
 
-    def configure(self, name: str, **kwargs) -> "FormRenderer":
+        # Validate and create instance (normal Pydantic)
+        data = LoginSchema(**form_data)
+    """
+
+    @classmethod
+    def get_field_configs(cls) -> dict[str, FieldConfig]:
+        """Cache field configurations."""
+        if not hasattr(cls, "_field_config_cache"):
+            configs = {}
+            for name, field_info in cls.model_fields.items():
+                annotation = cls.__annotations__.get(name, str)
+                configs[name] = _extract_field_config(name, annotation, field_info)
+            cls._field_config_cache = configs
+        return cls._field_config_cache
+
+    @classmethod
+    def configure_field(cls, name: str, **kwargs) -> type["BaseForm"]:
         """Override configuration for a specific field."""
-        if name in self.field_configs:
+        configs = cls.get_field_configs()
+        if name in configs:
             for key, value in kwargs.items():
-                setattr(self.field_configs[name], key, value)
-        return self
+                setattr(configs[name], key, value)
+        return cls
 
+    @classmethod
     def render(
-        self,
+        cls,
         action: str = "",
         method: str = "post",
         *,
@@ -222,18 +237,15 @@ class FormRenderer:
         values = values or {}
         errors = errors or {}
         exclude = exclude or set()
+        configs = cls.get_field_configs()
 
         if include:
-            field_names = [n for n in include if n in self.field_configs]
+            field_names = [n for n in include if n in configs]
         else:
-            field_names = [n for n in self.field_configs if n not in exclude]
+            field_names = [n for n in configs if n not in exclude]
 
         fields = [
-            self._render_field(
-                self.field_configs[name],
-                values.get(name),
-                errors.get(name),
-            )
+            cls._render_field(configs[name], values.get(name), errors.get(name))
             for name in field_names
         ]
 
@@ -245,48 +257,56 @@ class FormRenderer:
             **form_attrs,
         )
 
+    @classmethod
     def render_field(
-        self,
+        cls,
         name: str,
         value: Any = None,
         error: str | None = None,
     ) -> Element:
         """Render a single field with label wrapper."""
-        cfg = self.field_configs.get(name)
+        configs = cls.get_field_configs()
+        cfg = configs.get(name)
         if not cfg:
             raise ValueError(f"Unknown field: {name}")
-        return self._render_field(cfg, value, error)
+        return cls._render_field(cfg, value, error)
 
+    @classmethod
     def input(
-        self,
+        cls,
         name: str,
         value: Any = None,
         error: str | None = None,
         **attrs,
     ) -> Element:
         """Render just the input element, no label wrapper."""
-        cfg = self.field_configs.get(name)
+        configs = cls.get_field_configs()
+        cfg = configs.get(name)
         if not cfg:
             raise ValueError(f"Unknown field: {name}")
-        return self._render_input_only(cfg, value, error, attrs)
+        return cls._render_input_only(cfg, value, error, attrs)
 
-    def label_for(self, name: str) -> Element:
+    @classmethod
+    def label_for(cls, name: str) -> Element:
         """Render just the label element for a field."""
-        cfg = self.field_configs.get(name)
+        configs = cls.get_field_configs()
+        cfg = configs.get(name)
         if not cfg:
             raise ValueError(f"Unknown field: {name}")
         return label(cfg.label, for_=name)
 
+    @classmethod
     def error_for(
-        self, name: str, errors: dict[str, str] | None = None
+        cls, name: str, errors: dict[str, str] | None = None
     ) -> Element | None:
         """Render error message for a field if present."""
         if not errors or name not in errors:
             return None
         return small(errors[name], id=f"{name}-error", class_="error")
 
+    @classmethod
     def fields(
-        self,
+        cls,
         *names: str,
         values: dict[str, Any] | None = None,
         errors: dict[str, str] | None = None,
@@ -295,24 +315,25 @@ class FormRenderer:
         values = values or {}
         errors = errors or {}
         return [
-            self.render_field(name, values.get(name), errors.get(name))
-            for name in names
+            cls.render_field(name, values.get(name), errors.get(name)) for name in names
         ]
 
+    @classmethod
     def inline(
-        self,
+        cls,
         *names: str,
         values: dict[str, Any] | None = None,
         errors: dict[str, str] | None = None,
     ) -> Element:
         """Render fields inline in a grid row."""
         return div(
-            self.fields(*names, values=values, errors=errors),
+            cls.fields(*names, values=values, errors=errors),
             class_="grid",
         )
 
+    @classmethod
     def group(
-        self,
+        cls,
         title: str,
         *names: str,
         values: dict[str, Any] | None = None,
@@ -321,11 +342,12 @@ class FormRenderer:
         """Render fields in a fieldset with legend."""
         return fieldset(
             legend(title),
-            *self.fields(*names, values=values, errors=errors),
+            *cls.fields(*names, values=values, errors=errors),
         )
 
+    @classmethod
     def _render_input_only(
-        self,
+        cls,
         cfg: FieldConfig,
         value: Any,
         error: str | None,
@@ -334,20 +356,21 @@ class FormRenderer:
         """Render just the input/select/textarea element."""
         match cfg.widget:
             case "select":
-                return self._render_select_input(cfg, value, error, extra_attrs)
+                return cls._render_select_input(cfg, value, error, extra_attrs)
             case "textarea":
-                return self._render_textarea_input(cfg, value, error, extra_attrs)
+                return cls._render_textarea_input(cfg, value, error, extra_attrs)
             case "checkbox":
-                return self._render_checkbox_input(cfg, value, error, extra_attrs)
+                return cls._render_checkbox_input(cfg, value, error, extra_attrs)
             case "hidden":
                 return input_(
                     type="hidden", name=cfg.name, value=str(value or ""), **extra_attrs
                 )
             case _:
-                return self._render_input_element(cfg, value, error, extra_attrs)
+                return cls._render_input_element(cfg, value, error, extra_attrs)
 
+    @classmethod
     def _render_input_element(
-        self,
+        cls,
         cfg: FieldConfig,
         value: Any,
         error: str | None,
@@ -374,8 +397,9 @@ class FormRenderer:
             attrs["aria-describedby"] = f"{cfg.name}-error"
         return input_(**{k: v for k, v in attrs.items() if v is not None})
 
+    @classmethod
     def _render_textarea_input(
-        self,
+        cls,
         cfg: FieldConfig,
         value: Any,
         error: str | None,
@@ -398,8 +422,9 @@ class FormRenderer:
             str(value or ""), **{k: v for k, v in attrs.items() if v is not None}
         )
 
+    @classmethod
     def _render_select_input(
-        self,
+        cls,
         cfg: FieldConfig,
         value: Any,
         error: str | None,
@@ -427,8 +452,9 @@ class FormRenderer:
             **{k: v for k, v in attrs.items() if v is not None},
         )
 
+    @classmethod
     def _render_checkbox_input(
-        self,
+        cls,
         cfg: FieldConfig,
         value: Any,
         error: str | None,
@@ -444,61 +470,65 @@ class FormRenderer:
             **extra_attrs,
         )
 
-    def _render_field(self, cfg: FieldConfig, value: Any, error: str | None) -> Element:
+    @classmethod
+    def _render_field(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
         """Render a field based on its configuration."""
         match cfg.widget:
             case "select":
-                return self._render_select(cfg, value, error)
+                return cls._render_select(cfg, value, error)
             case "textarea":
-                return self._render_textarea(cfg, value, error)
+                return cls._render_textarea(cfg, value, error)
             case "checkbox":
-                return self._render_checkbox(cfg, value, error)
+                return cls._render_checkbox(cfg, value, error)
             case "radio":
-                return self._render_radio(cfg, value, error)
+                return cls._render_radio(cfg, value, error)
             case "hidden":
                 return input_(type="hidden", name=cfg.name, value=str(value or ""))
             case _:
-                return self._render_input(cfg, value, error)
+                return cls._render_input(cfg, value, error)
 
-    def _render_input(self, cfg: FieldConfig, value: Any, error: str | None) -> Element:
+    @classmethod
+    def _render_input(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
         return label(
             cfg.label,
-            self._render_input_element(cfg, value, error, {}),
+            cls._render_input_element(cfg, value, error, {}),
             small(cfg.description) if cfg.description and not error else None,
             small(error, id=f"{cfg.name}-error", class_="error") if error else None,
         )
 
+    @classmethod
     def _render_textarea(
-        self, cfg: FieldConfig, value: Any, error: str | None
+        cls, cfg: FieldConfig, value: Any, error: str | None
     ) -> Element:
         return label(
             cfg.label,
-            self._render_textarea_input(cfg, value, error, {}),
+            cls._render_textarea_input(cfg, value, error, {}),
             small(cfg.description) if cfg.description and not error else None,
             small(error, class_="error") if error else None,
         )
 
-    def _render_select(
-        self, cfg: FieldConfig, value: Any, error: str | None
-    ) -> Element:
+    @classmethod
+    def _render_select(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
         return label(
             cfg.label,
-            self._render_select_input(cfg, value, error, {}),
+            cls._render_select_input(cfg, value, error, {}),
             small(cfg.description) if cfg.description and not error else None,
             small(error, class_="error") if error else None,
         )
 
+    @classmethod
     def _render_checkbox(
-        self, cfg: FieldConfig, value: Any, error: str | None
+        cls, cfg: FieldConfig, value: Any, error: str | None
     ) -> Element:
         return label(
-            self._render_checkbox_input(cfg, value, error, {}),
+            cls._render_checkbox_input(cfg, value, error, {}),
             cfg.label,
             small(cfg.description) if cfg.description and not error else None,
             small(error, class_="error") if error else None,
         )
 
-    def _render_radio(self, cfg: FieldConfig, value: Any, error: str | None) -> Element:
+    @classmethod
+    def _render_radio(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
         str_value = str(value) if value is not None else ""
         radios = [
             label(

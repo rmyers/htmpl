@@ -8,16 +8,16 @@ from functools import wraps
 from inspect import isawaitable
 import inspect
 from string.templatelib import Template
-from typing import Callable, Awaitable, Any, TypeAlias, TypeVar
+from typing import Any, Awaitable, Callable, Generic, TypeAlias, TypeVar
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ValidationError
 
 from .core import SafeHTML, html
 from .elements import Element, Fragment
-from .forms import FormRenderer, parse_form_errors
+from .forms import BaseForm, parse_form_errors
 
 
 HTML: TypeAlias = Element | Fragment | SafeHTML | Template
@@ -66,10 +66,78 @@ class HTMLRoute(APIRoute):
         super().__init__(path, html_endpoint, **kwargs)
 
 
-T = TypeVar("T", bound=BaseModel)
+T = TypeVar("T", bound=BaseForm)
 
 
-class Router(APIRouter):
+class FormValidationError(HTTPException):
+    """Raised when form validation fails - contains the rendered HTML response."""
+
+    def __init__(self, content: str):
+        # Use 422 for validation errors, or 200 if you want it to look successful
+        super().__init__(status_code=200, detail="Form validation failed")
+        self.response = HTMLResponse(content=content, status_code=200)
+
+
+async def form_validation_error_handler(request: Request, exc: FormValidationError):
+    return exc.response
+
+
+class HTMLForm(Generic[T]):
+    """
+    Dependency that validates form data and re-renders template on errors.
+
+    Usage:
+        async def login_page(renderer, values, errors):
+            return section(
+                h1("Login"),
+                renderer.render(action="/login", values=values, errors=errors)
+            )
+
+        @router.get("/login")
+        async def show_login():
+            return await login_page(login_form, {}, {})
+
+        @router.post("/login")
+        async def handle_login(
+            data: LoginSchema = Depends(HTMLForm(LoginSchema, login_page)),
+            user: User = Depends(get_current_user)
+        ):
+            # Only reached if validation succeeds
+            return htmx_redirect("/dashboard")
+    """
+
+    def __init__(
+        self,
+        model: type[T],
+        template: Callable[[type[T], dict, dict], Awaitable[HTML]],
+    ):
+        self.model = model
+        self.template = template
+
+    async def __call__(self, request: Request) -> T:
+        """Validate form data or raise FormValidationError with rendered template."""
+        form_data = await request.form()
+        values = dict(form_data)
+
+        # Handle checkboxes
+        for name, cfg in self.model.get_field_configs().items():
+            if cfg.widget == "checkbox" and name in form_data:
+                values[name] = True  # type: ignore
+
+        try:
+            return self.model(**values)
+        except ValidationError as e:
+            errors = parse_form_errors(e)
+
+            # Render the template with errors
+            html = await self.template(self.model, values, errors)
+            content = await render_html(html)
+
+            # Raise exception to short-circuit and return the rendered form
+            raise FormValidationError(content or "<div>Invalid Form</div")
+
+
+class HTMLRouter(APIRouter):
     """
     APIRouter that renders Element/SafeHTML and handles forms.
 
@@ -91,77 +159,6 @@ class Router(APIRouter):
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("route_class", HTMLRoute)
         super().__init__(*args, **kwargs)
-
-    def form(
-        self,
-        path: str,
-        model: type[T],
-        *,
-        action: str | None = None,
-        method: str = "post",
-        submit_text: str = "Submit",
-        template: Callable[[FormRenderer, dict, dict], Any] | None = None,
-        **form_attrs,
-    ):
-        """
-        Decorator that registers GET (render form) and POST (handle submit) routes.
-
-        Args:
-            path: URL path for the form
-            model: Pydantic model for validation
-            action: Form action URL (defaults to path)
-            method: Form method
-            submit_text: Submit button text
-            template: Custom template function(renderer, values, errors) -> Element
-            **form_attrs: Extra attributes for the form element
-        """
-        renderer = FormRenderer(model)
-        form_action = action or path
-
-        def decorator(handler: Callable[[T], Awaitable[Any]]):
-
-            @self.get(path)
-            async def get_form(request: Request) -> Any:
-                values = dict(request.query_params)
-                if template:
-                    return template(renderer, values, {})
-                return renderer.render(
-                    action=form_action,
-                    method=method,
-                    values=values,
-                    submit_text=submit_text,
-                    **form_attrs,
-                )
-
-            @self.post(path)
-            async def post_form(request: Request) -> Any:
-                form_data = await request.form()
-                values = dict(form_data)
-
-                for name, cfg in renderer.field_configs.items():
-                    if cfg.widget == "checkbox" and name in form_data:
-                        values[name] = True  # type: ignore
-
-                try:
-                    validated = model(**values)
-                except ValidationError as e:
-                    errors = parse_form_errors(e)
-                    if template:
-                        return template(renderer, values, errors)
-                    return renderer.render(
-                        action=form_action,
-                        method=method,
-                        values=values,
-                        errors=errors,
-                        submit_text=submit_text,
-                        **form_attrs,
-                    )
-
-                return await handler(validated)
-
-            return handler
-
-        return decorator
 
 
 def is_htmx(request: Request) -> bool:

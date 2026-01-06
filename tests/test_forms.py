@@ -8,7 +8,7 @@ import pytest
 from pydantic import BaseModel, Field, ValidationError, EmailStr
 
 from htmpl.forms import (
-    FormRenderer,
+    BaseForm,
     FieldConfig,
     parse_form_errors,
     _label_from_name,
@@ -20,18 +20,18 @@ from htmpl.elements import button, form, div, h3
 # Test models
 
 
-class SimpleForm(BaseModel):
+class SimpleForm(BaseForm):
     name: str
     email: str
 
 
-class ValidatedForm(BaseModel):
+class ValidatedForm(BaseForm):
     username: str = Field(min_length=3, max_length=20)
     age: int = Field(ge=18, le=120)
     website: str = Field(default="")
 
 
-class FullForm(BaseModel):
+class FullForm(BaseForm):
     name: str = Field(title="Full Name", description="Enter your name")
     email: EmailStr = Field(title="Email Address")
     password: str = Field(min_length=8)
@@ -42,7 +42,7 @@ class FullForm(BaseModel):
     agree: bool = Field(default=False, title="I agree to terms")
 
 
-class ChoicesForm(BaseModel):
+class ChoicesForm(BaseForm):
     priority: str = Field(
         default="normal",
         json_schema_extra={
@@ -89,12 +89,12 @@ class TestHelpers:
 
 class TestFieldConfig:
     def test_basic_config(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
 
-        assert "name" in renderer.field_configs
-        assert "email" in renderer.field_configs
+        assert "name" in renderer.get_field_configs()
+        assert "email" in renderer.get_field_configs()
 
-        name_cfg = renderer.field_configs["name"]
+        name_cfg = renderer.get_field_configs()["name"]
         assert name_cfg.name == "name"
         assert name_cfg.label == "Name"
         assert name_cfg.type == "text"
@@ -102,37 +102,37 @@ class TestFieldConfig:
         assert name_cfg.widget == "input"
 
     def test_validation_constraints(self):
-        renderer = FormRenderer(ValidatedForm)
+        renderer = ValidatedForm
 
-        username_cfg = renderer.field_configs["username"]
+        username_cfg = renderer.get_field_configs()["username"]
         assert username_cfg.minlength == 3
         assert username_cfg.maxlength == 20
 
-        age_cfg = renderer.field_configs["age"]
+        age_cfg = renderer.get_field_configs()["age"]
         assert age_cfg.min == 18
         assert age_cfg.max == 120
         assert age_cfg.type == "number"
 
     def test_custom_title(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
 
-        name_cfg = renderer.field_configs["name"]
+        name_cfg = renderer.get_field_configs()["name"]
         assert name_cfg.label == "Full Name"
 
-        email_cfg = renderer.field_configs["email"]
+        email_cfg = renderer.get_field_configs()["email"]
         assert email_cfg.label == "Email Address"
 
     def test_widget_override(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
 
-        bio_cfg = renderer.field_configs["bio"]
+        bio_cfg = renderer.get_field_configs()["bio"]
         assert bio_cfg.widget == "textarea"
         assert bio_cfg.rows == 6
 
     def test_literal_creates_choices(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
 
-        role_cfg = renderer.field_configs["role"]
+        role_cfg = renderer.get_field_configs()["role"]
         assert role_cfg.widget == "select"
         assert role_cfg.choices == [
             ["admin", "admin"],
@@ -141,16 +141,16 @@ class TestFieldConfig:
         ]
 
     def test_bool_creates_checkbox(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
 
-        agree_cfg = renderer.field_configs["agree"]
+        agree_cfg = renderer.get_field_configs()["agree"]
         assert agree_cfg.widget == "checkbox"
         assert agree_cfg.type == "checkbox"
 
     def test_custom_choices(self):
-        renderer = FormRenderer(ChoicesForm)
+        renderer = ChoicesForm
 
-        priority_cfg = renderer.field_configs["priority"]
+        priority_cfg = renderer.get_field_configs()["priority"]
         assert priority_cfg.widget == "radio"
         assert priority_cfg.choices == [
             ["low", "Low"],
@@ -158,15 +158,15 @@ class TestFieldConfig:
             ["high", "High"],
         ]
 
-        country_cfg = renderer.field_configs["country"]
+        country_cfg = renderer.get_field_configs()["country"]
         assert country_cfg.widget == "select"
         assert ["us", "United States"] in country_cfg.choices
 
     def test_configure_override(self):
-        renderer = FormRenderer(SimpleForm)
-        renderer.configure("name", label="Your Name", placeholder="John Doe")
+        renderer = SimpleForm
+        renderer.configure_field("name", label="Your Name", placeholder="John Doe")
 
-        name_cfg = renderer.field_configs["name"]
+        name_cfg = renderer.get_field_configs()["name"]
         assert name_cfg.label == "Your Name"
         assert name_cfg.placeholder == "John Doe"
 
@@ -174,7 +174,7 @@ class TestFieldConfig:
 class TestFormRendering:
     @pytest.mark.asyncio
     async def test_render_simple_form(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.render(action="/submit")
 
         html = await element.__html__()
@@ -189,7 +189,7 @@ class TestFormRendering:
 
     @pytest.mark.asyncio
     async def test_render_with_values(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.render(
             action="/submit",
             values={"name": "Bob", "email": "bob@example.com"},
@@ -202,7 +202,7 @@ class TestFormRendering:
 
     @pytest.mark.asyncio
     async def test_render_with_errors(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.render(
             action="/submit",
             values={"name": "", "email": "invalid"},
@@ -218,7 +218,7 @@ class TestFormRendering:
 
     @pytest.mark.asyncio
     async def test_render_with_exclude(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.render(action="/submit", exclude={"email"})
 
         html = await element.__html__()
@@ -228,7 +228,7 @@ class TestFormRendering:
 
     @pytest.mark.asyncio
     async def test_render_with_include(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
         element = renderer.render(action="/submit", include=["name", "email"])
 
         html = await element.__html__()
@@ -240,7 +240,7 @@ class TestFormRendering:
 
     @pytest.mark.asyncio
     async def test_custom_submit_text(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.render(action="/submit", submit_text="Create Account")
 
         html = await element.__html__()
@@ -249,7 +249,7 @@ class TestFormRendering:
 
     @pytest.mark.asyncio
     async def test_extra_form_attrs(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.render(
             action="/submit",
             id="signup-form",
@@ -265,7 +265,7 @@ class TestFormRendering:
 class TestFieldRendering:
     @pytest.mark.asyncio
     async def test_render_input(self):
-        renderer = FormRenderer(ValidatedForm)
+        renderer = ValidatedForm
         element = renderer.render_field("username")
 
         html = await element.__html__()
@@ -279,7 +279,7 @@ class TestFieldRendering:
 
     @pytest.mark.asyncio
     async def test_render_number_input(self):
-        renderer = FormRenderer(ValidatedForm)
+        renderer = ValidatedForm
         element = renderer.render_field("age", value=25)
 
         html = await element.__html__()
@@ -291,7 +291,7 @@ class TestFieldRendering:
 
     @pytest.mark.asyncio
     async def test_render_textarea(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
         element = renderer.render_field("bio", value="Hello world")
 
         html = await element.__html__()
@@ -303,7 +303,7 @@ class TestFieldRendering:
 
     @pytest.mark.asyncio
     async def test_render_select(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
         element = renderer.render_field("role", value="admin")
 
         html = await element.__html__()
@@ -316,7 +316,7 @@ class TestFieldRendering:
 
     @pytest.mark.asyncio
     async def test_render_checkbox(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
         element = renderer.render_field("agree", value=True)
 
         html = await element.__html__()
@@ -328,7 +328,7 @@ class TestFieldRendering:
 
     @pytest.mark.asyncio
     async def test_render_radio(self):
-        renderer = FormRenderer(ChoicesForm)
+        renderer = ChoicesForm
         element = renderer.render_field("priority", value="high")
 
         html = await element.__html__()
@@ -342,7 +342,7 @@ class TestFieldRendering:
 
     @pytest.mark.asyncio
     async def test_render_unknown_field_raises(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
 
         with pytest.raises(ValueError, match="Unknown field"):
             renderer.render_field("unknown")
@@ -385,7 +385,7 @@ class TestParseFormErrors:
 class TestEmailInference:
     @pytest.mark.asyncio
     async def test_email_str_type(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
         element = renderer.render_field("email")
 
         html = await element.__html__()
@@ -396,7 +396,7 @@ class TestEmailInference:
 class TestCustomLayout:
     @pytest.mark.asyncio
     async def test_input_only(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.input("name", value="Bob")
 
         html = await element.__html__()
@@ -408,7 +408,7 @@ class TestCustomLayout:
 
     @pytest.mark.asyncio
     async def test_input_with_extra_attrs(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.input("name", class_="custom", data_test="value")
 
         html = await element.__html__()
@@ -418,7 +418,7 @@ class TestCustomLayout:
 
     @pytest.mark.asyncio
     async def test_label_for(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
         element = renderer.label_for("email")
 
         html = await element.__html__()
@@ -429,7 +429,7 @@ class TestCustomLayout:
 
     @pytest.mark.asyncio
     async def test_error_for_with_error(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.error_for("name", {"name": "Required"})
 
         html = await element.__html__()
@@ -439,14 +439,14 @@ class TestCustomLayout:
 
     @pytest.mark.asyncio
     async def test_error_for_without_error(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.error_for("name", {})
 
         assert element is None
 
     @pytest.mark.asyncio
     async def test_fields_list(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         elements = renderer.fields("name", "email", values={"name": "Bob"})
 
         assert len(elements) == 2
@@ -457,7 +457,7 @@ class TestCustomLayout:
 
     @pytest.mark.asyncio
     async def test_inline_fields(self):
-        renderer = FormRenderer(SimpleForm)
+        renderer = SimpleForm
         element = renderer.inline("name", "email")
 
         html = await element.__html__()
@@ -468,7 +468,7 @@ class TestCustomLayout:
 
     @pytest.mark.asyncio
     async def test_group_fields(self):
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
         element = renderer.group("Account Info", "name", "email")
 
         html = await element.__html__()
@@ -482,7 +482,7 @@ class TestCustomLayout:
     @pytest.mark.asyncio
     async def test_custom_form_layout(self):
         """Test building a completely custom form layout."""
-        renderer = FormRenderer(FullForm)
+        renderer = FullForm
         values = {"name": "Bob", "email": "bob@test.com"}
         errors = {"password": "Too short"}
 

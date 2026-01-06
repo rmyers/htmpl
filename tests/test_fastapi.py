@@ -3,20 +3,20 @@ Tests for htmpl FastAPI integration.
 """
 
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.testclient import TestClient
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import Field, EmailStr
 
-from htmpl import html, SafeHTML
+from htmpl import html, forms, SafeHTML
 from htmpl.elements import section, h1, p, div, article, form, button
-from htmpl.fastapi import Router, is_htmx, htmx_target, htmx_trigger, htmx_redirect, htmx_refresh, htmx_retarget, htmx_trigger_event
+from htmpl.fastapi import HTMLRouter, HTMLForm, FormValidationError, form_validation_error_handler, is_htmx, htmx_target, htmx_trigger, htmx_redirect, htmx_refresh, htmx_retarget, htmx_trigger_event
 
 
 class TestRouter:
     @pytest.fixture
     def app(self):
         app = FastAPI()
-        router = Router()
+        router = HTMLRouter()
 
         @router.get("/")
         async def home():
@@ -77,26 +77,24 @@ class TestFormRouter:
     @pytest.fixture
     def app(self):
         app = FastAPI()
-        router = Router()
+        router = HTMLRouter()
 
-        class LoginSchema(BaseModel):
+        class LoginSchema(forms.BaseForm):
             email: EmailStr = Field(examples=["foo@bar.com"], description="Your email dah")
             password: str = Field(min_length=8)
 
-        class SignupSchema(BaseModel):
+        class SignupSchema(forms.BaseForm):
             username: str = Field(min_length=3, max_length=20)
             email: EmailStr
             agree_tos: bool
 
-        @router.form("/login", LoginSchema, submit_text="Sign In")
-        async def login(data: LoginSchema):
-            return section(h1(f"Welcome, {data.email}!"))
+        async def signup_form(renderer: type[SignupSchema], values, errors):
+            return article(
+                h1("Custom Login"),
+                renderer.render(values=values, errors=errors),
+            )
 
-        @router.form("/signup", SignupSchema, submit_text="Create Account")
-        async def signup(data: SignupSchema):
-            return section(h1(f"Account created for {data.username}!"))
-
-        def custom_template(renderer, values, errors):
+        async def login_form(renderer: type[LoginSchema], values, errors):
             return article(
                 h1("Custom Login"),
                 form(
@@ -107,11 +105,25 @@ class TestFormRouter:
                 ),
             )
 
-        @router.form("/custom-login", LoginSchema, template=custom_template)
-        async def custom_login(data: LoginSchema):
-            return p(f"Logged in as {data.email}")
+        @router.get("/login")
+        async def login_page():
+            return await login_form(LoginSchema, {}, {})
+
+        @router.post("/login")
+        async def login(data: LoginSchema = Depends(HTMLForm(LoginSchema, login_form))):
+            return section(h1(f"Welcome, {data.email}!"))
+
+        @router.get("/signup")
+        async def signup_page(data: SignupSchema = Depends(HTMLForm(SignupSchema, signup_form))):
+            return await signup_form(SignupSchema, {}, {})
+
+        @router.post("/signup")
+        async def signup(data: SignupSchema = Depends(HTMLForm(SignupSchema, signup_form))):
+            return section(h1(f"Account created for {data.username}!"))
+
 
         app.include_router(router)
+        app.add_exception_handler(FormValidationError, form_validation_error_handler)
         return app
 
     @pytest.fixture
@@ -127,12 +139,7 @@ class TestFormRouter:
         assert 'name="password"' in response.text
         assert 'placeholder="foo@bar.com"' in response.text
         assert '<small>Your email dah</small>' in response.text
-        assert "Sign In" in response.text
-
-    def test_form_get_with_query_params(self, client):
-        response = client.get("/login?email=test@example.com")
-        assert response.status_code == 200
-        assert 'value="test@example.com"' in response.text
+        assert "Custom Submit" in response.text
 
     def test_form_post_valid_data(self, client):
         response = client.post("/login", data={
@@ -185,23 +192,16 @@ class TestFormRouter:
         # Validation should fail since agree_tos is required
         assert "<form" in response.text
 
-    def test_form_custom_template_get(self, client):
-        response = client.get("/custom-login")
-        assert response.status_code == 200
-        assert "Custom Login" in response.text
-        assert "Custom Submit" in response.text
-        assert "<article>" in response.text
-
     def test_form_custom_template_post_valid(self, client):
-        response = client.post("/custom-login", data={
+        response = client.post("/login", data={
             "email": "user@example.com",
             "password": "secretpassword",
         })
         assert response.status_code == 200
-        assert "Logged in as user@example.com" in response.text
+        assert "Welcome, user@example.com!" in response.text
 
     def test_form_custom_template_post_invalid(self, client):
-        response = client.post("/custom-login", data={
+        response = client.post("/login", data={
             "email": "bad-email",
             "password": "secretpassword",
         })
@@ -297,7 +297,7 @@ class TestIntegration:
     @pytest.fixture
     def app(self):
         app = FastAPI()
-        router = Router()
+        router = HTMLRouter()
 
         @router.get("/")
         async def home() -> SafeHTML:

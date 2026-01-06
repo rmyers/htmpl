@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
+from pydantic import BaseModel, Field, EmailStr
 
 from htmpl import html, SafeHTML, Fragment, fragment
 from htmpl.core import cached_ttl
@@ -17,18 +18,16 @@ from htmpl.elements import (
     form, label, input_, button,
     details, summary,
 )
-from htmpl.fastapi import html_response, is_htmx
+from htmpl.forms import BaseForm
+from htmpl.fastapi import HTMLRouter, HTMLForm, FormValidationError, form_validation_error_handler, is_htmx
 from htmpl.htmx import HX, HtmxScripts, SearchInput, LazyLoad
 from htmpl.components import Document, LucideScripts
 
-
-app = FastAPI(debug=True)
-
+router = HTMLRouter()
 
 # Models
 
-@dataclass
-class User:
+class User(BaseModel):
     id: int
     username: str
     avatar_url: str
@@ -214,8 +213,7 @@ async def GlobalStatsBar() -> SafeHTML:
 
 # Routes
 
-@app.get("/", response_model=None)
-@html_response
+@router.get("/")
 async def home() -> SafeHTML:
     user = await get_current_user()
     leaderboard = await get_leaderboard()
@@ -238,8 +236,7 @@ async def home() -> SafeHTML:
     )
 
 
-@app.get("/board", response_model=None)
-@html_response
+@router.get("/board", response_model=None)
 async def leaderboard(request: Request, q: str = "") -> SafeHTML:
     users = await get_leaderboard(q)
 
@@ -259,8 +256,7 @@ async def leaderboard(request: Request, q: str = "") -> SafeHTML:
     )
 
 
-@app.get("/dashboard")
-@html_response
+@router.get("/dashboard")
 async def dashboard() -> SafeHTML:
     user = await get_current_user()
     if not user:
@@ -293,41 +289,40 @@ async def dashboard() -> SafeHTML:
     )
 
 
-@app.get("/api/commits/recent", response_model=None)
-@html_response
+@router.get("/api/commits/recent", response_model=None)
 async def recent_commits() -> Fragment:
     user = await get_current_user()
     commits = await get_recent_commits(user.id) if user else []
     return fragment(*[CommitCard(msg, repo, pts, ts) for msg, repo, pts, ts in commits])
 
+class SettingsForm(BaseForm):
+    username: str = Field(description="fancy name for a user")
+    email: EmailStr
+    email_digest: bool
+    notify_mentions: bool
 
-@app.get("/settings")
-@html_response
-async def settings() -> SafeHTML:
+
+async def settings_form(renderer: type[SettingsForm], values, errors):
+    return await AppPage('Edit Settings', children=renderer.render(values=values, errors=errors, submit_text="Edit Account"))
+
+
+@router.get("/settings")
+async def signup_get():
+    user = await get_current_user()
+    values = user.model_dump() if user else {}
+
+    return await settings_form(SettingsForm, values, {})
+
+@router.post("/settings")
+async def signup(data: SettingsForm = Depends(HTMLForm(SettingsForm, settings_form))):
     user = await get_current_user()
 
-    return await AppPage(
-        "Settings",
-        user=user,
-        children=fragment(
-            h1("Settings"),
-            article(
-                div("Profile", slot="header"),
-                form(
-                    label("Username", input_(type="text", name="username", value=user.username, disabled=True)),
-                    label("Email", input_(type="email", name="email", placeholder="your@email.com")),
-                    label("Location", input_(type="text", name="location", placeholder="City, Country")),
-                    h3("Notifications"),
-                    label(input_(type="checkbox", name="email_digest", checked=True), "Weekly email digest"),
-                    label(input_(type="checkbox", name="notify_mentions"), "Notify on mentions"),
-                    button("Save Settings", type="submit"),
-                    action="/settings",
-                    method="post",
-                ),
-            ),
-        ),
-    )
+    return div('congrats')
 
+
+app = FastAPI(debug=True)
+app.include_router(router)
+app.add_exception_handler(FormValidationError, form_validation_error_handler)
 
 if __name__ == "__main__":
     import uvicorn
