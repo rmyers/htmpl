@@ -5,18 +5,12 @@ Tests for htmpl FastAPI integration.
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from pydantic import BaseModel, Field, EmailStr
 
 from htmpl import html, SafeHTML
-from htmpl.fastapi import (
-    Router,
-    is_htmx,
-    htmx_target,
-    htmx_trigger,
-    htmx_redirect,
-    htmx_refresh,
-    htmx_retarget,
-    htmx_trigger_event,
-)
+from htmpl.elements import section, h1, p, div, article, form, button
+from htmpl.fastapi import Router, is_htmx, htmx_target, htmx_trigger, htmx_redirect, htmx_refresh, htmx_retarget, htmx_trigger_event
+
 
 class TestRouter:
     @pytest.fixture
@@ -24,17 +18,26 @@ class TestRouter:
         app = FastAPI()
         router = Router()
 
-        @router.get('/')
-        async def home() -> SafeHTML:
-            return await html(t'''
-                <!DOCTYPE html>
-                <html>
-                <body>
-                    <h1>Home</h1>
-                </body>
-                </html>
-            ''')
+        @router.get("/")
+        async def home():
+            return section(h1("Home"))
 
+        @router.get("/user/{name}")
+        async def user(name: str):
+            return p(f"Hello, {name}!")
+
+        @router.get("/template")
+        async def template_route():
+            name = "World"
+            return t"<div>Hello, {name}!</div>"
+
+        @router.get("/safe")
+        async def safe_route():
+            return SafeHTML("<strong>Safe</strong>")
+
+        @router.get("/json")
+        async def json_route():
+            return {"message": "json"}
 
         app.include_router(router)
         return app
@@ -43,10 +46,168 @@ class TestRouter:
     def client(self, app):
         return TestClient(app)
 
-    def test_get_routes(self, client):
-        response = client.get('/')
-        assert response.status_code == 200, response.text
-        assert "Home" in response.text
+    def test_element_response(self, client):
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+        assert "<section><h1>Home</h1></section>" in response.text
+
+    def test_element_with_params(self, client):
+        response = client.get("/user/Bob")
+        assert response.status_code == 200
+        assert "<p>Hello, Bob!</p>" in response.text
+
+    def test_template_response(self, client):
+        response = client.get("/template")
+        assert response.status_code == 200
+        assert "<div>Hello, World!</div>" in response.text
+
+    def test_safehtml_response(self, client):
+        response = client.get("/safe")
+        assert response.status_code == 200
+        assert "<strong>Safe</strong>" in response.text
+
+    def test_json_passthrough(self, client):
+        response = client.get("/json")
+        assert response.status_code == 200
+        assert response.json() == {"message": "json"}
+
+
+class TestFormRouter:
+    @pytest.fixture
+    def app(self):
+        app = FastAPI()
+        router = Router()
+
+        class LoginSchema(BaseModel):
+            email: EmailStr = Field(examples=["foo@bar.com"], description="Your email dah")
+            password: str = Field(min_length=8)
+
+        class SignupSchema(BaseModel):
+            username: str = Field(min_length=3, max_length=20)
+            email: EmailStr
+            agree_tos: bool
+
+        @router.form("/login", LoginSchema, submit_text="Sign In")
+        async def login(data: LoginSchema):
+            return section(h1(f"Welcome, {data.email}!"))
+
+        @router.form("/signup", SignupSchema, submit_text="Create Account")
+        async def signup(data: SignupSchema):
+            return section(h1(f"Account created for {data.username}!"))
+
+        def custom_template(renderer, values, errors):
+            return article(
+                h1("Custom Login"),
+                form(
+                    renderer.render_field("email", values.get("email"), errors.get("email")),
+                    renderer.render_field("password", error=errors.get("password")),
+                    button("Custom Submit", type="submit"),
+                    action="/custom-login",
+                ),
+            )
+
+        @router.form("/custom-login", LoginSchema, template=custom_template)
+        async def custom_login(data: LoginSchema):
+            return p(f"Logged in as {data.email}")
+
+        app.include_router(router)
+        return app
+
+    @pytest.fixture
+    def client(self, app):
+        return TestClient(app)
+
+    def test_form_get_renders_form(self, client):
+        response = client.get("/login")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+        assert "<form" in response.text
+        assert 'name="email"' in response.text
+        assert 'name="password"' in response.text
+        assert 'placeholder="foo@bar.com"' in response.text
+        assert '<small>Your email dah</small>' in response.text
+        assert "Sign In" in response.text
+
+    def test_form_get_with_query_params(self, client):
+        response = client.get("/login?email=test@example.com")
+        assert response.status_code == 200
+        assert 'value="test@example.com"' in response.text
+
+    def test_form_post_valid_data(self, client):
+        response = client.post("/login", data={
+            "email": "user@example.com",
+            "password": "secretpassword",
+        })
+        assert response.status_code == 200
+        assert "Welcome, user@example.com!" in response.text
+
+    def test_form_post_invalid_email(self, client):
+        response = client.post("/login", data={
+            "email": "not-an-email",
+            "password": "secretpassword",
+        })
+        assert response.status_code == 200
+        assert "<form" in response.text
+        assert 'aria-invalid="true"' in response.text
+        assert 'value="not-an-email"' in response.text
+
+    def test_form_post_password_too_short(self, client):
+        response = client.post("/login", data={
+            "email": "user@example.com",
+            "password": "short",
+        })
+        assert response.status_code == 200
+        assert "<form" in response.text
+        assert 'value="user@example.com"' in response.text
+
+    def test_form_post_missing_fields(self, client):
+        response = client.post("/login", data={})
+        assert response.status_code == 200
+        assert "<form" in response.text
+
+    def test_form_checkbox_true(self, client):
+        response = client.post("/signup", data={
+            "username": "testuser",
+            "email": "test@example.com",
+            "agree_tos": "on",
+        })
+        assert response.status_code == 200
+        assert "Account created for testuser!" in response.text
+
+    def test_form_checkbox_false(self, client):
+        response = client.post("/signup", data={
+            "username": "testuser",
+            "email": "test@example.com",
+            # agree_tos not present = False
+        })
+        assert response.status_code == 200
+        # Validation should fail since agree_tos is required
+        assert "<form" in response.text
+
+    def test_form_custom_template_get(self, client):
+        response = client.get("/custom-login")
+        assert response.status_code == 200
+        assert "Custom Login" in response.text
+        assert "Custom Submit" in response.text
+        assert "<article>" in response.text
+
+    def test_form_custom_template_post_valid(self, client):
+        response = client.post("/custom-login", data={
+            "email": "user@example.com",
+            "password": "secretpassword",
+        })
+        assert response.status_code == 200
+        assert "Logged in as user@example.com" in response.text
+
+    def test_form_custom_template_post_invalid(self, client):
+        response = client.post("/custom-login", data={
+            "email": "bad-email",
+            "password": "secretpassword",
+        })
+        assert response.status_code == 200
+        assert "Custom Login" in response.text
+        assert 'aria-invalid="true"' in response.text
 
 
 class TestHtmxRequestHelpers:

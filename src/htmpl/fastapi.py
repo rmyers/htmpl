@@ -139,8 +139,8 @@ class Router(APIRouter):
                 values = dict(form_data)
 
                 for name, cfg in renderer.field_configs.items():
-                    if cfg.widget == "checkbox":
-                        values[name] = name in form_data  # type: ignore
+                    if cfg.widget == "checkbox" and name in form_data:
+                        values[name] = True  # type: ignore
 
                 try:
                     validated = model(**values)

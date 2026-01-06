@@ -54,6 +54,7 @@ class FieldConfig(BaseModel):
     type: str = "text"
     required: bool = False
     placeholder: str = ""
+    description: str | None = None
 
     # HTML5 validation attributes
     min: int | float | None = None
@@ -167,12 +168,17 @@ def _extract_field_config(
         field_info.default is PydanticUndefined and field_info.default_factory is None
     )
 
+    placeholder: str = ""
+    if field_info.examples:
+        placeholder = ", ".join([str(e) for e in field_info.examples])
+
     return FieldConfig(
         name=name,
         label=field_info.title or _label_from_name(name),
         type=input_type,
         required=required,
-        placeholder=field_info.description or "",
+        placeholder=placeholder,
+        description=field_info.description,
         choices=choices,
         widget=widget,
         **metadata,
@@ -458,6 +464,7 @@ class FormRenderer:
         return label(
             cfg.label,
             self._render_input_element(cfg, value, error, {}),
+            small(cfg.description) if cfg.description and not error else None,
             small(error, id=f"{cfg.name}-error", class_="error") if error else None,
         )
 
@@ -467,6 +474,7 @@ class FormRenderer:
         return label(
             cfg.label,
             self._render_textarea_input(cfg, value, error, {}),
+            small(cfg.description) if cfg.description and not error else None,
             small(error, class_="error") if error else None,
         )
 
@@ -476,6 +484,7 @@ class FormRenderer:
         return label(
             cfg.label,
             self._render_select_input(cfg, value, error, {}),
+            small(cfg.description) if cfg.description and not error else None,
             small(error, class_="error") if error else None,
         )
 
@@ -485,6 +494,7 @@ class FormRenderer:
         return label(
             self._render_checkbox_input(cfg, value, error, {}),
             cfg.label,
+            small(cfg.description) if cfg.description and not error else None,
             small(error, class_="error") if error else None,
         )
 
@@ -508,6 +518,7 @@ class FormRenderer:
         return fieldset(
             legend(cfg.label),
             *radios,
+            small(cfg.description) if cfg.description and not error else None,
             small(error, class_="error") if error else None,
         )
 
