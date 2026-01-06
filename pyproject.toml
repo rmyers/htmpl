@@ -8,14 +8,14 @@ requires-python = ">=3.14"
 authors = [{ name = "Robert Myers", email = "robert@julython.org" }]
 keywords = ["html", "templating", "t-strings", "fastapi", "htmx", "pico"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Framework :: FastAPI",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.14",
-    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
-    "Topic :: Text Processing :: Markup :: HTML",
-    "Typing :: Typed",
+  "Development Status :: 3 - Alpha",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+  "Topic :: Text Processing :: Markup :: HTML",
+  "Typing :: Typed",
 ]
 
 dependencies = []
@@ -23,15 +23,15 @@ dependencies = []
 [project.optional-dependencies]
 all = ["fastapi>=0.115", "pydantic>=2.0"]
 dev = [
-    "fastapi>=0.115",
-    "pydantic>=2.0",
-    "pydantic[email]>=2.0",
-    "uvicorn>=0.32",
-    "httpx>=0.28",
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
-    "ruff>=0.8",
-    "mypy>=1.13",
+  "fastapi>=0.115",
+  "pydantic>=2.0",
+  "pydantic[email]>=2.0",
+  "uvicorn>=0.32",
+  "httpx>=0.28",
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.8",
+  "mypy>=1.13",
 ]
 
 [project.urls]
@@ -55,28 +55,18 @@ select = ["E", "F", "I", "UP", "B", "SIM", "TCH"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.13"  # mypy doesn't support 3.14 yet
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true
-
-[[tool.mypy.overrides]]
-module = ["htmpl.*"]
-disable_error_code = ["misc"]  # Ignore PEP 750 t-string errors until mypy supports them
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.conda-lock]
-channels = [
-  "conda-forge",
-  "defaults"
-]
-platforms = [
-  "linux-aarch64",
-  "osx-arm64"
-]
+channels = ["conda-forge", "defaults"]
+platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
 
 [tool.conda-lock.dependencies]
 conda-lock = "*"

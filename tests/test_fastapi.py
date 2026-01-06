@@ -8,8 +8,7 @@ from fastapi.testclient import TestClient
 
 from htmpl import html, SafeHTML
 from htmpl.fastapi import (
-    THtmlResponse,
-    html_response,
+    Router,
     is_htmx,
     htmx_target,
     htmx_trigger,
@@ -19,67 +18,35 @@ from htmpl.fastapi import (
     htmx_trigger_event,
 )
 
-
-class TestTHtmlResponse:
-    def test_response_content(self):
-        content = SafeHTML("<p>Hello</p>")
-        response = THtmlResponse(content)
-        assert response.body == b"<p>Hello</p>"
-        assert response.status_code == 200
-
-    def test_response_custom_status(self):
-        response = THtmlResponse(SafeHTML(""), status_code=201)
-        assert response.status_code == 201
-
-    def test_response_headers(self):
-        response = THtmlResponse(SafeHTML(""), headers={"X-Custom": "value"})
-        assert response.headers["X-Custom"] == "value"
-
-    def test_content_type(self):
-        response = THtmlResponse(SafeHTML(""))
-        assert "text/html" in response.headers["content-type"]
-
-
-class TestHtmlResponseDecorator:
+class TestRouter:
     @pytest.fixture
     def app(self):
         app = FastAPI()
+        router = Router()
 
-        @app.get("/sync")
-        @html_response
-        def sync_handler() -> SafeHTML:
-            # Note: In real usage this would be async
-            import asyncio
-            return asyncio.get_event_loop().run_until_complete(
-                html(t"<p>sync</p>")
-            )
+        @router.get('/')
+        async def home() -> SafeHTML:
+            return await html(t'''
+                <!DOCTYPE html>
+                <html>
+                <body>
+                    <h1>Home</h1>
+                </body>
+                </html>
+            ''')
 
-        @app.get("/async")
-        @html_response
-        async def async_handler() -> SafeHTML:
-            return await html(t"<p>async</p>")
 
-        @app.get("/with-param/{name}")
-        @html_response
-        async def param_handler(name: str) -> SafeHTML:
-            return await html(t"<p>Hello, {name}!</p>")
-
+        app.include_router(router)
         return app
 
     @pytest.fixture
     def client(self, app):
         return TestClient(app)
 
-    def test_async_handler(self, client):
-        response = client.get("/async")
-        assert response.status_code == 200
-        assert "<p>async</p>" in response.text
-        assert "text/html" in response.headers["content-type"]
-
-    def test_handler_with_params(self, client):
-        response = client.get("/with-param/World")
-        assert response.status_code == 200
-        assert "<p>Hello, World!</p>" in response.text
+    def test_get_routes(self, client):
+        response = client.get('/')
+        assert response.status_code == 200, response.text
+        assert "Home" in response.text
 
 
 class TestHtmxRequestHelpers:
@@ -169,9 +136,9 @@ class TestIntegration:
     @pytest.fixture
     def app(self):
         app = FastAPI()
+        router = Router()
 
-        @app.get("/")
-        @html_response
+        @router.get("/")
         async def home() -> SafeHTML:
             return await html(t'''
                 <!DOCTYPE html>
@@ -185,8 +152,7 @@ class TestIntegration:
                 </html>
             ''')
 
-        @app.get("/partial")
-        @html_response
+        @router.get("/partial")
         async def partial(request: Request) -> SafeHTML:
             if is_htmx(request):
                 return await html(t"<p>Partial content loaded!</p>")
@@ -196,8 +162,7 @@ class TestIntegration:
                 <html><body><p>Partial content loaded!</p></body></html>
             ''')
 
-        @app.get("/users")
-        @html_response
+        @router.get("/users")
         async def users(q: str = "") -> SafeHTML:
             all_users = ["Alice", "Bob", "Charlie"]
             filtered = [u for u in all_users if q.lower() in u.lower()] if q else all_users
@@ -207,6 +172,7 @@ class TestIntegration:
                 </ul>
             ''')
 
+        app.include_router(router)
         return app
 
     @pytest.fixture

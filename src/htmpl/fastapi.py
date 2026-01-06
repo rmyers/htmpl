@@ -4,78 +4,164 @@ FastAPI integration for htmpl.
 
 from __future__ import annotations
 
-from typing import Callable, Awaitable
 from functools import wraps
 from inspect import isawaitable
+import inspect
 from string.templatelib import Template
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any, TypeAlias, TypeVar
 
-from fastapi import Request, Response
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, ValidationError
 
 from .core import SafeHTML, html
 from .elements import Element, Fragment
+from .forms import FormRenderer, parse_form_errors
 
 
-class THtmlResponse(HTMLResponse):
-    """FastAPI response for SafeHTML content."""
-
-    def __init__(
-        self,
-        content: SafeHTML,
-        status_code: int = 200,
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        super().__init__(
-            content=content.content,
-            status_code=status_code,
-            headers=headers,
-        )
+HTML: TypeAlias = Element | Fragment | SafeHTML | Template
 
 
-Renderable = SafeHTML | Element | Fragment | Template
+async def render_html(result: Any) -> str | None:
+    """Render an Element/SafeHTML/Template to string."""
+    if isinstance(result, SafeHTML):
+        return result.content
+
+    if isinstance(result, Template):
+        rendered = await html(result)
+        return rendered.content
+
+    if hasattr(result, "__html__"):
+        content = result.__html__()
+        if isawaitable(content):
+            content = await content
+        return content
+
+    return None
 
 
-def html_response(
-    func: Callable[..., Renderable | Awaitable[Renderable]],
-) -> Callable[..., Awaitable[THtmlResponse]]:
+class HTMLRoute(APIRoute):
+    """Route class that auto-converts Element/SafeHTML returns to HTMLResponse."""
+
+    def __init__(self, path: str, endpoint: Callable[..., Any], **kwargs):
+        # We need to wrap the endpoint callable and process the results
+        # doing this here so that we do not have to decorate each endpoint
+
+        @wraps(endpoint)
+        async def html_endpoint(*args, **kwargs):
+            result = endpoint(*args, **kwargs)
+            if isawaitable(result):
+                result = await result
+
+            content = await render_html(result)
+            if content is not None:
+                return HTMLResponse(content)
+
+            return result
+
+        # Preserve signature for FastAPI's dependency injection
+        html_endpoint.__signature__ = inspect.signature(endpoint)  # type: ignore
+
+        super().__init__(path, html_endpoint, **kwargs)
+
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class Router(APIRouter):
     """
-    Decorator that renders SafeHTML/Element/Template to THtmlResponse.
+    APIRouter that renders Element/SafeHTML and handles forms.
 
     Usage:
-        @app.get("/")
-        @html_response
-        async def home() -> Element:
+        from htmpl.fastapi import Router
+        from htmpl.elements import section, h1
+
+        router = Router()
+
+        @router.get("/")
+        async def home():
             return section(h1("Hello"))
 
-        @app.get("/page")
-        @html_response
-        async def page(name: str) -> Template:
-            return t"<h1>Hello {name}</h1>"
+        @router.form("/login", LoginSchema)
+        async def login(data: LoginSchema):
+            return section(h1(f"Welcome, {data.email}!"))
     """
 
-    @wraps(func)
-    async def wrapper(*args, **kwargs) -> THtmlResponse:
-        result = func(*args, **kwargs)
-        if isawaitable(result):
-            result = await result
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("route_class", HTMLRoute)
+        super().__init__(*args, **kwargs)
 
-        # Element/Fragment -> render async __html__
-        if isinstance(result, (Element, Fragment)):
-            content = await result.__html__()
-            return THtmlResponse(SafeHTML(content))
+    def form(
+        self,
+        path: str,
+        model: type[T],
+        *,
+        action: str | None = None,
+        method: str = "post",
+        submit_text: str = "Submit",
+        template: Callable[[FormRenderer, dict, dict], Any] | None = None,
+        **form_attrs,
+    ):
+        """
+        Decorator that registers GET (render form) and POST (handle submit) routes.
 
-        # Template -> process with html()
-        if isinstance(result, Template):
-            return THtmlResponse(await html(result))
+        Args:
+            path: URL path for the form
+            model: Pydantic model for validation
+            action: Form action URL (defaults to path)
+            method: Form method
+            submit_text: Submit button text
+            template: Custom template function(renderer, values, errors) -> Element
+            **form_attrs: Extra attributes for the form element
+        """
+        renderer = FormRenderer(model)
+        form_action = action or path
 
-        # SafeHTML -> use directly
-        return THtmlResponse(result)
+        def decorator(handler: Callable[[T], Awaitable[Any]]):
 
-    return wrapper
+            @self.get(path)
+            async def get_form(request: Request) -> Any:
+                values = dict(request.query_params)
+                if template:
+                    return template(renderer, values, {})
+                return renderer.render(
+                    action=form_action,
+                    method=method,
+                    values=values,
+                    submit_text=submit_text,
+                    **form_attrs,
+                )
 
+            @self.post(path)
+            async def post_form(request: Request) -> Any:
+                form_data = await request.form()
+                values = dict(form_data)
 
-# Request context helpers
+                for name, cfg in renderer.field_configs.items():
+                    if cfg.widget == "checkbox":
+                        values[name] = name in form_data  # type: ignore
+
+                try:
+                    validated = model(**values)
+                except ValidationError as e:
+                    errors = parse_form_errors(e)
+                    if template:
+                        return template(renderer, values, errors)
+                    return renderer.render(
+                        action=form_action,
+                        method=method,
+                        values=values,
+                        errors=errors,
+                        submit_text=submit_text,
+                        **form_attrs,
+                    )
+
+                return await handler(validated)
+
+            return handler
+
+        return decorator
 
 
 def is_htmx(request: Request) -> bool:
@@ -112,10 +198,10 @@ def htmx_refresh() -> Response:
     )
 
 
-def htmx_retarget(content: SafeHTML, target: str) -> THtmlResponse:
+def htmx_retarget(content: SafeHTML, target: str) -> Response:
     """Return content with retargeted swap."""
-    return THtmlResponse(
-        content=content,
+    return Response(
+        content=content.content,
         headers={"HX-Retarget": target},
     )
 
@@ -125,12 +211,12 @@ def htmx_trigger_event(
     event: str,
     *,
     after: str = "settle",
-) -> THtmlResponse:
+) -> Response:
     """Return content and trigger a client-side event."""
     header = (
         f"HX-Trigger-After-{after.capitalize()}" if after != "receive" else "HX-Trigger"
     )
-    return THtmlResponse(
-        content=content,
+    return Response(
+        content=content.content,
         headers={header: event},
     )

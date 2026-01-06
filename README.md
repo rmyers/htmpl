@@ -156,22 +156,24 @@ async def GlobalStats():
 
 ```python
 from fastapi import FastAPI
-from htmpl import html
+from htmpl.fastapi import Router
 from htmpl.elements import section, h1, p
-from htmpl.fastapi import html_response
 
 app = FastAPI()
+router = Router()
 
-@app.get("/")
-@html_response
+@router.get("/")
 async def home():
-    return section(
-        h1("Welcome"),
-        p("This is htmpl."),
-    )
+    return section(h1("Welcome"), p("Just return Elements."))
+
+@router.get("/user/{name}")
+async def user(name: str):
+    return section(h1(f"Hello, {name}!"))
+
+app.include_router(router)
 ```
 
-The `@html_response` decorator handles `Element`, `Fragment`, `SafeHTML`, and `Template` return types.
+The `Router` automatically converts `Element`, `Fragment`, `SafeHTML`, and `Template` returns to HTML responses.
 
 ## HTMX Integration
 
@@ -193,42 +195,67 @@ Render Pydantic models as forms with automatic HTML5 validation:
 
 ```python
 from pydantic import BaseModel, Field, EmailStr
-from htmpl.forms import FormRenderer, parse_form_errors
+from htmpl.fastapi import Router
+from htmpl.elements import section, h1
 
-class SignupSchema(BaseModel):
-    username: str = Field(min_length=3, max_length=20)
+router = Router()
+
+class LoginSchema(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
-    age: int = Field(ge=18)
 
-renderer = FormRenderer(SignupSchema)
-
-# Render empty form
-renderer.render(action="/signup")
-
-# With values and errors
-renderer.render(
-    action="/signup",
-    values={"username": "bob"},
-    errors={"email": "Invalid email"},
-)
+@router.form("/login", LoginSchema, submit_text="Sign In")
+async def login(data: LoginSchema):
+    # Only called if validation passes
+    user = await authenticate(data.email, data.password)
+    return section(h1(f"Welcome, {user.name}!"))
 ```
+
+The `@router.form` decorator:
+
+- **GET /login** → Renders the form
+- **POST /login** → Validates, re-renders with errors or calls your handler
 
 Generates proper HTML5 validation attributes:
 
 ```html
-<input type="text" name="username" required minlength="3" maxlength="20" />
 <input type="email" name="email" required />
 <input type="password" name="password" required minlength="8" />
-<input type="number" name="age" required min="18" />
 ```
 
 ### Custom Form Layouts
 
+Use the `template` parameter for full control:
+
 ```python
+from htmpl.elements import article, h2, form, div, button
+
+def login_template(renderer, values, errors):
+    return article(
+        h2("Sign In"),
+        form(
+            renderer.inline("email", "password", values=values, errors=errors),
+            button("Sign In", type="submit"),
+            action="/login",
+        ),
+    )
+
+@router.form("/login", LoginSchema, template=login_template)
+async def login(data: LoginSchema):
+    user = await authenticate(data.email, data.password)
+    return section(h1(f"Welcome, {user.name}!"))
+```
+
+Or use `FormRenderer` directly for maximum flexibility:
+
+```python
+from htmpl.forms import FormRenderer
+
+renderer = FormRenderer(SignupSchema)
+
 form(
     renderer.inline("first_name", "last_name", values=values),
-    renderer.group("Contact", "email", "phone", values=values),
+    renderer.group("Contact", "email", "phone", values=values, errors=errors),
 
     # Manual control
     div(
@@ -315,8 +342,8 @@ Attributes use `_` suffix for Python keywords: `class_`, `for_`, `type_`.
 | Feature        | htmpl | Jinja   | React    |
 | -------------- | ----- | ------- | -------- |
 | Type safety    | ✅    | ❌      | ✅ (TSX) |
-| Python-native  | ✅    | ?       | ❌       |
-| Async support  | ✅    | ✅      | ❌       |
+| Python-native  | ✅    | ❌      | ❌       |
+| Async support  | ✅    | ❌      | ❌       |
 | No build step  | ✅    | ✅      | ❌       |
 | IDE support    | ✅    | Limited | ✅       |
 | Learning curve | Low   | Medium  | High     |
