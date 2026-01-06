@@ -206,7 +206,8 @@ class BaseForm(BaseModel):
         if not hasattr(cls, "_field_config_cache"):
             configs = {}
             for name, field_info in cls.model_fields.items():
-                annotation = cls.__annotations__.get(name, str)
+                # Use the annotation stored by Pydantic
+                annotation = field_info.annotation or str
                 configs[name] = _extract_field_config(name, annotation, field_info)
             cls._field_config_cache = configs
         return cls._field_config_cache
