@@ -298,7 +298,7 @@ async def recent_commits() -> Fragment:
 class SettingsForm(BaseForm):
     username: str = Field(description="fancy name for a user")
     email: EmailStr
-    email_digest: bool = Field(json_schema_extra={'form_widget': "checkbox"})
+    email_digest: bool = Field(json_schema_extra={'role': "switch"})
     notify_mentions: bool
 
 

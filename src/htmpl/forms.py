@@ -56,6 +56,7 @@ class FieldConfig(BaseModel):
     required: bool = False
     placeholder: str = ""
     description: str | None = None
+    role: str | None = None
 
     # HTML5 validation attributes
     min: int | float | None = None
@@ -100,6 +101,8 @@ def _infer_input_type(python_type: type, field_name: str) -> str:
     name_lower = field_name.lower()
     if "password" in name_lower:
         return "password"
+    if "email" in name_lower:
+        return "email"
     if "url" in name_lower or "website" in name_lower:
         return "url"
     if "phone" in name_lower or "tel" in name_lower:
@@ -468,6 +471,7 @@ class BaseForm(BaseModel):
             id=cfg.name,
             checked=bool(value) or None,
             required=cfg.required or None,
+            role=cfg.role or None,
             **extra_attrs,
         )
 
