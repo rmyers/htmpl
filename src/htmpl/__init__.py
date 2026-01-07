@@ -30,14 +30,18 @@ from .components import (
     Table,
     Grid,
 )
-
-# Optional forms support (requires pydantic)
-try:
-    from .forms import FormRenderer, FieldConfig, parse_form_errors
-
-    _HAS_FORMS = True
-except ImportError:
-    _HAS_FORMS = False
+from .fastapi import (
+    HTML,
+    HTMLForm,
+    HTMLRouter,
+    FormValidationError,
+    form_validation_error_handler,
+)
+from .forms import (
+    BaseForm,
+    FieldConfig,
+    parse_form_errors,
+)
 
 __version__ = "0.1.0"
 __all__ = [
@@ -67,7 +71,14 @@ __all__ = [
     "Modal",
     "Table",
     "Grid",
+    # FastAPI
+    "HTML",
+    "HTMLForm",
+    "HTMLRouter",
+    "FormValidationError",
+    "form_validation_error_handler",
+    # Forms
+    "BaseForm",
+    "FieldConfig",
+    "parse_form_errors",
 ]
-
-if _HAS_FORMS:
-    __all__ += ["FormRenderer", "FieldConfig", "parse_form_errors"]

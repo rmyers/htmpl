@@ -18,8 +18,7 @@ Usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dataclass_field
-from typing import Any, Generic, Literal, TypeVar, cast, get_origin, get_args
+from typing import Any, Literal, TypeVar, cast, get_origin, get_args
 
 from pydantic import BaseModel, ValidationError
 from pydantic.fields import FieldInfo
