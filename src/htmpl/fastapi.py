@@ -1,24 +1,26 @@
-"""
-FastAPI integration for htmpl.
-"""
-
 from __future__ import annotations
 
+import inspect
 from functools import wraps
 from inspect import isawaitable
-import inspect
 from string.templatelib import Template
 from typing import Any, Awaitable, Callable, Generic, TypeAlias, TypeVar
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
+from .assets import (
+    BUNDLE_DIR,
+    Bundles,
+    get_bundles,
+    get_pages,
+    page as page_decorator,
+)
 from .core import SafeHTML, html
 from .elements import Element, Fragment
 from .forms import BaseForm, parse_form_errors
-
 
 HTML: TypeAlias = Element | Fragment | SafeHTML | Template
 
@@ -41,13 +43,34 @@ async def render_html(result: Any) -> str | None:
     return None
 
 
+# --- Layout ---
+
+LayoutFunc: TypeAlias = Callable[[str, str, Bundles], str | Awaitable[str]]
+
+
+def default_layout(content: str, title: str, bundles: Bundles) -> str:
+    """Default page layout."""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    {bundles.head()}
+</head>
+<body>
+    {content}
+</body>
+</html>"""
+
+
+# --- Routes ---
+
+
 class HTMLRoute(APIRoute):
-    """Route class that auto-converts Element/SafeHTML returns to HTMLResponse."""
+    """Route that auto-converts Element/SafeHTML to HTMLResponse."""
 
     def __init__(self, path: str, endpoint: Callable[..., Any], **kwargs):
-        # We need to wrap the endpoint callable and process the results
-        # doing this here so that we do not have to decorate each endpoint
-
         @wraps(endpoint)
         async def html_endpoint(*args, **kwargs):
             result = endpoint(*args, **kwargs)
@@ -57,7 +80,6 @@ class HTMLRoute(APIRoute):
             content = await render_html(result)
             if content is not None:
                 return HTMLResponse(content)
-
             return result
 
         # Preserve signature for FastAPI's dependency injection
@@ -66,6 +88,51 @@ class HTMLRoute(APIRoute):
         super().__init__(path, html_endpoint, **kwargs)
 
 
+class PageRoute(APIRoute):
+    """Route that wraps response with layout and bundled assets."""
+
+    def __init__(
+        self,
+        path: str,
+        endpoint: Callable[..., Any],
+        *,
+        layout: LayoutFunc | None = None,
+        **kwargs,
+    ):
+        page_name = getattr(endpoint, "_htmpl_page", None)
+        layout_fn = layout or default_layout
+
+        @wraps(endpoint)
+        async def page_endpoint(*args, **kwargs):
+            result = endpoint(*args, **kwargs)
+            if isawaitable(result):
+                result = await result
+
+            content = await render_html(result)
+            if content is None:
+                return result
+
+            # Get page metadata
+            pages = get_pages()
+            page_def = pages.get(page_name) if page_name else None
+            title = page_def.title if page_def else "Page"
+
+            # Get bundled assets
+            bundles = get_bundles(page_name) if page_name else Bundles()
+
+            # Apply layout
+            final = layout_fn(content, title, bundles)
+            if isawaitable(final):
+                final = await final
+
+            return HTMLResponse(final)
+
+        page_endpoint.__signature__ = inspect.signature(endpoint)  # type: ignore
+        super().__init__(path, page_endpoint, **kwargs)
+
+
+# --- Form Handling ---
+
 T = TypeVar("T", bound=BaseForm)
 
 
@@ -73,7 +140,6 @@ class FormValidationError(HTTPException):
     """Raised when form validation fails - contains the rendered HTML response."""
 
     def __init__(self, content: str):
-        # Use 422 for validation errors, or 200 if you want it to look successful
         super().__init__(status_code=200, detail="Form validation failed")
         self.response = HTMLResponse(content=content, status_code=200)
 
@@ -139,26 +205,104 @@ class HTMLForm(Generic[T]):
 
 class HTMLRouter(APIRouter):
     """
-    APIRouter that renders Element/SafeHTML and handles forms.
+    Router with HTML rendering and page bundling support.
 
     Usage:
-        from htmpl.fastapi import Router
-        from htmpl.elements import section, h1
+        router = HTMLRouter()
 
-        router = Router()
+        # Simple fragment (no bundling)
+        @router.get("/fragment")
+        async def fragment():
+            return div(h1("Hello"))
 
-        @router.get("/")
-        async def home():
-            return section(h1("Hello"))
-
-        @router.form("/login", LoginSchema)
-        async def login(data: LoginSchema):
-            return section(h1(f"Welcome, {data.email}!"))
+        # Full page with bundling
+        @router.page(
+            "/dashboard",
+            title="Dashboard",
+            css={"/static/css/dashboard.css"},
+            imports={"main_nav", "dropdown"},
+        )
+        async def dashboard(request: Request):
+            return section(h1("Dashboard"))
     """
 
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("route_class", HTMLRoute)
         super().__init__(*args, **kwargs)
+
+    def page(
+        self,
+        path: str,
+        *,
+        title: str = "Page",
+        css: set[str] | None = None,
+        js: set[str] | None = None,
+        py: set[str] | None = None,
+        imports: set[str] | None = None,
+        layout: LayoutFunc | None = None,
+        **kwargs,
+    ):
+        """
+        Decorator for page routes with asset bundling.
+
+        Args:
+            path: URL path
+            title: Page title
+            css: Page-specific CSS files
+            js: Page-specific JS files
+            py: Page-specific PyScript files
+            imports: Component names this page uses
+            layout: Custom layout function
+        """
+
+        def decorator(fn: Callable) -> Callable:
+            # Register page with assets module
+            decorated = page_decorator(
+                title=title,
+                css=css,
+                js=js,
+                py=py,
+                imports=imports,
+            )(fn)
+
+            # Add route with PageRoute
+            route = PageRoute(
+                path,
+                decorated,
+                layout=layout,
+                methods=kwargs.pop("methods", ["GET"]),
+                **kwargs,
+            )
+            self.routes.append(route)
+            return decorated
+
+        return decorator
+
+
+# --- Bundle Serving ---
+
+
+def mount_bundles(router: APIRouter, path: str = "/static/bundles") -> None:
+    """Add route to serve bundles with immutable caching."""
+
+    @router.get(f"{path}/{{filename:path}}")
+    async def serve_bundle(filename: str):
+        file_path = BUNDLE_DIR / filename
+        if not file_path.exists():
+            return Response(status_code=404)
+
+        media_types = {
+            ".css": "text/css",
+            ".js": "application/javascript",
+            ".py": "text/x-python",
+        }
+        media = media_types.get(file_path.suffix, "application/octet-stream")
+
+        return FileResponse(
+            file_path,
+            media_type=media,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
 
 def is_htmx(request: Request) -> bool:
@@ -174,9 +318,6 @@ def htmx_target(request: Request) -> str | None:
 def htmx_trigger(request: Request) -> str | None:
     """Get HTMX trigger element ID."""
     return request.headers.get("HX-Trigger")
-
-
-# HTMX response helpers
 
 
 def htmx_redirect(url: str) -> Response:

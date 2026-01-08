@@ -91,7 +91,7 @@ async def AppPage(title: str, children, user: User | None = None, scripts=None) 
 
 async def AppMain(user: User | None, children):
     not_user = "fake"
-    return fragment(t"{AppNav(user)}{main(children)}")
+    return fragment(t"{AppNav(user)}{main(children, class_='container')}")
 
 async def AppNav(user: User | None):
     items = [("Leaderboard", "/board"), ("Projects", "/projects"), ("About", "/about")]
@@ -113,7 +113,7 @@ async def AppNav(user: User | None):
         end = li(a("Sign in with GitHub", href="/login", role="button"))
 
     return nav(
-        ul(li(strong("Julython"))),
+        ul(li(a(strong("Julython"), href="/"))),
         ul(
             [li(a(lbl, href=href)) for lbl, href in items],
             end,
