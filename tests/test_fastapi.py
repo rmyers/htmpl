@@ -134,7 +134,7 @@ class TestFormRouter:
             return section(h1(f"Account created for {data.username}!"))
 
         app.include_router(router)
-        app.add_exception_handler(FormValidationError, form_validation_error_handler)
+        app.add_exception_handler(FormValidationError, form_validation_error_handler) # type: ignore
         return app
 
     @pytest.fixture
