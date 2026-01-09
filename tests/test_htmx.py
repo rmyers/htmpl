@@ -6,8 +6,14 @@ import pytest
 from htmpl import html
 from htmpl.htmx import (
     HX,
-    HtmxScripts, HtmxExtension,
-    LoadingButton, InfiniteScroll, LazyLoad, PollingContent, SearchInput, OobSwap,
+    HtmxScripts,
+    HtmxExtension,
+    LoadingButton,
+    InfiniteScroll,
+    LazyLoad,
+    PollingContent,
+    SearchInput,
+    OobSwap,
 )
 
 
@@ -73,7 +79,7 @@ class TestHXBuilder:
 
     def test_include(self):
         hx = HX(post="/api", include="[name='token']")
-        assert 'hx-include="[name=\'token\']"' in str(hx)
+        assert "hx-include=\"[name='token']\"" in str(hx)
 
     def test_params(self):
         hx = HX(get="/api", params="*")
@@ -106,8 +112,8 @@ class TestHXBuilder:
     def test_on_events(self):
         hx = HX(on={"click": "alert('hi')", "htmx:beforeRequest": "console.log('req')"})
         result = str(hx)
-        assert 'hx-on:click="alert(\'hi\')"' in result
-        assert 'hx-on:htmx:beforeRequest="console.log(\'req\')"' in result
+        assert "hx-on:click=\"alert('hi')\"" in result
+        assert "hx-on:htmx:beforeRequest=\"console.log('req')\"" in result
 
     def test_html_method(self):
         hx = HX(get="/api")
@@ -116,7 +122,7 @@ class TestHXBuilder:
     @pytest.mark.asyncio
     async def test_interpolation_in_template(self):
         hx = HX(get="/api/data", target="#results", swap="innerHTML")
-        result = await html(t'<button {hx}>Load</button>')
+        result = await html(t"<button {hx}>Load</button>")
         assert 'hx-get="/api/data"' in result.content
         assert 'hx-target="#results"' in result.content
 

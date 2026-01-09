@@ -3,10 +3,13 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable, Protocol, runtime_checkable
 import hashlib
 import json
 import os
+import httpx
+
+from .core import SafeHTML
 
 BUNDLE_DIR = Path(os.environ.get("HTMPL_BUNDLE_DIR", "static/bundles"))
 PREBUILT = os.environ.get("HTMPL_PREBUILT") == "1"
@@ -14,6 +17,25 @@ PREBUILT = os.environ.get("HTMPL_PREBUILT") == "1"
 _components: dict[str, "Component"] = {}
 _pages: dict[str, "Page"] = {}
 _manifest: dict | None = None
+
+
+# --- Component Type ---
+
+
+@runtime_checkable
+class ComponentFunc(Protocol):
+    """
+    Protocol for decorated component functions.
+
+    Components must be decorated with @component to be used in page(uses={...}).
+    """
+
+    _htmpl_component: str
+
+    def __call__(self, *args, **kwargs) -> Awaitable[SafeHTML]: ...
+
+
+# --- Data Classes ---
 
 
 @dataclass
@@ -40,13 +62,16 @@ class Page:
     layout: str | None = None
 
 
+# --- Decorators ---
+
+
 def component(
     name: str | None = None,
     *,
     css: set[str] | None = None,
     js: set[str] | None = None,
     py: set[str] | None = None,
-    imports: set[str] | None = None,
+    uses: set[ComponentFunc] | None = None,
 ):
     """
     Register a component with its assets and dependencies.
@@ -55,23 +80,39 @@ def component(
         css={"/static/css/dropdown.css"},
         py={"/static/py/dropdown.py"},
     )
-    def dropdown(trigger, items): ...
+    async def dropdown(trigger, items): ...
 
     @component(
         css={"/static/css/account.css"},
-        imports={"dropdown"},
+        uses={dropdown},  # Reference other components directly
     )
-    def account_menu(user): ...
+    async def account_menu(user): ...
     """
 
-    def decorator(fn: Callable) -> Callable:
+    def decorator(fn: Callable) -> ComponentFunc:
         comp_name = name or fn.__name__
+
+        # Resolve component references to names
+        imports: set[str] = set()
+        for comp in uses or set():
+            if not callable(comp):
+                raise TypeError(
+                    f"Expected a component function, got {type(comp).__name__}"
+                )
+            dep_name = getattr(comp, "_htmpl_component", None)
+            if dep_name is None:
+                raise TypeError(
+                    f"'{type(comp).__name__}' is not a registered component. "
+                    f"Add the @component decorator to register it."
+                )
+            imports.add(dep_name)
+
         _components[comp_name] = Component(
             name=comp_name,
             css=css or set(),
             js=js or set(),
             py=py or set(),
-            imports=imports or set(),
+            imports=imports,
         )
         fn._htmpl_component = comp_name
         return fn
@@ -79,41 +120,7 @@ def component(
     return decorator
 
 
-def page(
-    title: str = "Page",
-    *,
-    css: set[str] | None = None,
-    js: set[str] | None = None,
-    py: set[str] | None = None,
-    imports: set[str] | None = None,
-    layout: str | None = None,
-):
-    """
-    Register a page with its assets and component dependencies.
-
-    @router.page(
-        "/dashboard",
-        title="Dashboard",
-        css={"/static/css/dashboard.css"},
-        imports={"main_nav", "stats_widget"},
-    )
-    async def dashboard(request): ...
-    """
-
-    def decorator(fn: Callable) -> Callable:
-        _pages[fn.__name__] = Page(
-            name=fn.__name__,
-            title=title,
-            css=css or set(),
-            js=js or set(),
-            py=py or set(),
-            imports=imports or set(),
-            layout=layout,
-        )
-        fn._htmpl_page = fn.__name__
-        return fn
-
-    return decorator
+# --- Resolution ---
 
 
 @dataclass
@@ -230,7 +237,16 @@ def create_bundle(files: set[str], name: str, ext: str, header: str = "") -> str
     end = " */" if ext == "css" else ""
 
     parts = [header] if header else []
-    for f in sorted(files):  # Sort for deterministic output
+    local_files = set()
+    for f in files:
+        if not f.startswith("http"):
+            local_files.add(f)
+        else:
+            with httpx.Client() as client:
+                resp = client.get(f)
+                parts.append(resp.text)
+
+    for f in sorted(local_files):  # Sort for deterministic output
         parts.append(f"{comment} {f}{end}\n{_read(f)}")
 
     content = "\n\n".join(parts)

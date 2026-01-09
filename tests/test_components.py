@@ -4,10 +4,25 @@ Tests for htmpl components.
 
 import pytest
 from htmpl.components import (
-    Document, Page, Nav, NavLink, Dropdown,
-    Card, Grid, HGroup,
-    Form, Field, TextArea, Select, Checkbox, Button, ButtonLink,
-    Alert, Modal, Table, Loading,
+    Document,
+    Page,
+    Nav,
+    NavLink,
+    Dropdown,
+    Card,
+    Grid,
+    HGroup,
+    Form,
+    Field,
+    TextArea,
+    Select,
+    Checkbox,
+    Button,
+    ButtonLink,
+    Alert,
+    Modal,
+    Table,
+    Loading,
 )
 from htmpl import html
 

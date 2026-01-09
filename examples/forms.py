@@ -19,6 +19,7 @@ app = FastAPI(debug=True)
 
 # --- Schema definitions with validation rules ---
 
+
 class SignupSchema(BaseModel):
     username: str = Field(
         min_length=3,
@@ -95,21 +96,17 @@ signup_form = FormRenderer(SignupSchema)
 login_form = FormRenderer(LoginSchema)
 contact_form = FormRenderer(ContactSchema)
 
+
 def render_signup(values: dict, errors: dict):
     return form(
         h2("Create Account"),
-
         # Inline fields (grid row)
         signup_form.inline("username", "age", values=values, errors=errors),
-
         # Grouped fields
         signup_form.group("Contact", "email", "bio", values=values, errors=errors),
-
         signup_form.inline("password", "confirm_password", values=values, errors=errors),
-
         # Regular wrapped field
         signup_form.render_field("agree_tos", value=values, error=errors),
-
         button("Sign Up", type="submit"),
         action="/signup",
         method="post",
@@ -118,6 +115,7 @@ def render_signup(values: dict, errors: dict):
 
 
 # --- Routes ---
+
 
 @app.get("/signup")
 @html_response
@@ -157,10 +155,12 @@ async def signup_submit(request: Request) -> SafeHTML:
         validated = SignupSchema(**data)
         # Success! Would save to DB here
         return await html(t"""
-            {article(
+            {
+            article(
                 h1("Welcome, {validated.username}!"),
                 p("Your account has been created."),
-            )}
+            )
+        }
         """)
     except Exception as e:
         print(e)
@@ -199,10 +199,12 @@ async def login_page() -> SafeHTML:
         </head>
         <body>
             <main class="container">
-                {article(
-                    h1("Login"),
-                    login_form.render(action="/login", submit_text="Sign In"),
-                )}
+                {
+        article(
+            h1("Login"),
+            login_form.render(action="/login", submit_text="Sign In"),
+        )
+    }
             </main>
         </body>
         </html>
@@ -222,10 +224,12 @@ async def contact_page() -> SafeHTML:
         </head>
         <body>
             <main class="container">
-                {section(
-                    h1("Contact Us"),
-                    contact_form.render(action="/contact", submit_text="Send Message"),
-                )}
+                {
+        section(
+            h1("Contact Us"),
+            contact_form.render(action="/contact", submit_text="Send Message"),
+        )
+    }
             </main>
         </body>
         </html>
@@ -233,6 +237,7 @@ async def contact_page() -> SafeHTML:
 
 
 # --- Inline HTMX validation endpoint ---
+
 
 @app.post("/validate/{field}")
 @html_response
@@ -262,4 +267,5 @@ async def validate_field(field: str, request: Request) -> SafeHTML:
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("forms:app", host="0.0.0.0", port=8000, reload=True)

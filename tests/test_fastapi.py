@@ -9,7 +9,19 @@ from pydantic import Field, EmailStr
 
 from htmpl import html, forms, SafeHTML
 from htmpl.elements import section, h1, p, div, article, form, button
-from htmpl.fastapi import HTMLRouter, HTMLForm, FormValidationError, form_validation_error_handler, is_htmx, htmx_target, htmx_trigger, htmx_redirect, htmx_refresh, htmx_retarget, htmx_trigger_event
+from htmpl.fastapi import (
+    HTMLRouter,
+    HTMLForm,
+    FormValidationError,
+    form_validation_error_handler,
+    is_htmx,
+    htmx_target,
+    htmx_trigger,
+    htmx_redirect,
+    htmx_refresh,
+    htmx_retarget,
+    htmx_trigger_event,
+)
 
 
 class TestRouter:
@@ -121,7 +133,6 @@ class TestFormRouter:
         async def signup(data: SignupSchema = Depends(HTMLForm(SignupSchema, signup_form))):
             return section(h1(f"Account created for {data.username}!"))
 
-
         app.include_router(router)
         app.add_exception_handler(FormValidationError, form_validation_error_handler)
         return app
@@ -138,32 +149,41 @@ class TestFormRouter:
         assert 'name="email"' in response.text
         assert 'name="password"' in response.text
         assert 'placeholder="foo@bar.com"' in response.text
-        assert '<small>Your email dah</small>' in response.text
+        assert "<small>Your email dah</small>" in response.text
         assert "Custom Submit" in response.text
 
     def test_form_post_valid_data(self, client):
-        response = client.post("/login", data={
-            "email": "user@example.com",
-            "password": "secretpassword",
-        })
+        response = client.post(
+            "/login",
+            data={
+                "email": "user@example.com",
+                "password": "secretpassword",
+            },
+        )
         assert response.status_code == 200
         assert "Welcome, user@example.com!" in response.text
 
     def test_form_post_invalid_email(self, client):
-        response = client.post("/login", data={
-            "email": "not-an-email",
-            "password": "secretpassword",
-        })
+        response = client.post(
+            "/login",
+            data={
+                "email": "not-an-email",
+                "password": "secretpassword",
+            },
+        )
         assert response.status_code == 200
         assert "<form" in response.text
         assert 'aria-invalid="true"' in response.text
         assert 'value="not-an-email"' in response.text
 
     def test_form_post_password_too_short(self, client):
-        response = client.post("/login", data={
-            "email": "user@example.com",
-            "password": "short",
-        })
+        response = client.post(
+            "/login",
+            data={
+                "email": "user@example.com",
+                "password": "short",
+            },
+        )
         assert response.status_code == 200
         assert "<form" in response.text
         assert 'value="user@example.com"' in response.text
@@ -174,37 +194,49 @@ class TestFormRouter:
         assert "<form" in response.text
 
     def test_form_checkbox_true(self, client):
-        response = client.post("/signup", data={
-            "username": "testuser",
-            "email": "test@example.com",
-            "agree_tos": "on",
-        })
+        response = client.post(
+            "/signup",
+            data={
+                "username": "testuser",
+                "email": "test@example.com",
+                "agree_tos": "on",
+            },
+        )
         assert response.status_code == 200
         assert "Account created for testuser!" in response.text
 
     def test_form_checkbox_false(self, client):
-        response = client.post("/signup", data={
-            "username": "testuser",
-            "email": "test@example.com",
-            # agree_tos not present = False
-        })
+        response = client.post(
+            "/signup",
+            data={
+                "username": "testuser",
+                "email": "test@example.com",
+                # agree_tos not present = False
+            },
+        )
         assert response.status_code == 200
         # Validation should fail since agree_tos is required
         assert "<form" in response.text
 
     def test_form_custom_template_post_valid(self, client):
-        response = client.post("/login", data={
-            "email": "user@example.com",
-            "password": "secretpassword",
-        })
+        response = client.post(
+            "/login",
+            data={
+                "email": "user@example.com",
+                "password": "secretpassword",
+            },
+        )
         assert response.status_code == 200
         assert "Welcome, user@example.com!" in response.text
 
     def test_form_custom_template_post_invalid(self, client):
-        response = client.post("/login", data={
-            "email": "bad-email",
-            "password": "secretpassword",
-        })
+        response = client.post(
+            "/login",
+            data={
+                "email": "bad-email",
+                "password": "secretpassword",
+            },
+        )
         assert response.status_code == 200
         assert "Custom Login" in response.text
         assert 'aria-invalid="true"' in response.text
@@ -242,18 +274,24 @@ class TestHtmxRequestHelpers:
         assert data["is_htmx"] is True
 
     def test_htmx_target(self, client):
-        response = client.get("/check-htmx", headers={
-            "HX-Request": "true",
-            "HX-Target": "#my-div",
-        })
+        response = client.get(
+            "/check-htmx",
+            headers={
+                "HX-Request": "true",
+                "HX-Target": "#my-div",
+            },
+        )
         data = response.json()
         assert data["target"] == "#my-div"
 
     def test_htmx_trigger(self, client):
-        response = client.get("/check-htmx", headers={
-            "HX-Request": "true",
-            "HX-Trigger": "my-button",
-        })
+        response = client.get(
+            "/check-htmx",
+            headers={
+                "HX-Request": "true",
+                "HX-Trigger": "my-button",
+            },
+        )
         data = response.json()
         assert data["trigger"] == "my-button"
 
@@ -301,7 +339,7 @@ class TestIntegration:
 
         @router.get("/")
         async def home() -> SafeHTML:
-            return await html(t'''
+            return await html(t"""
                 <!DOCTYPE html>
                 <html>
                 <body>
@@ -311,27 +349,27 @@ class TestIntegration:
                     </div>
                 </body>
                 </html>
-            ''')
+            """)
 
         @router.get("/partial")
         async def partial(request: Request) -> SafeHTML:
             if is_htmx(request):
                 return await html(t"<p>Partial content loaded!</p>")
             # Full page for direct access
-            return await html(t'''
+            return await html(t"""
                 <!DOCTYPE html>
                 <html><body><p>Partial content loaded!</p></body></html>
-            ''')
+            """)
 
         @router.get("/users")
         async def users(q: str = "") -> SafeHTML:
             all_users = ["Alice", "Bob", "Charlie"]
             filtered = [u for u in all_users if q.lower() in u.lower()] if q else all_users
-            return await html(t'''
+            return await html(t"""
                 <ul>
                     {[t"<li>{user}</li>" for user in filtered]}
                 </ul>
-            ''')
+            """)
 
         app.include_router(router)
         return app

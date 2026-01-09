@@ -11,8 +11,7 @@ from .core import html, SafeHTML, cached
 
 
 Swap = Literal[
-    "innerHTML", "outerHTML", "beforebegin", "afterbegin",
-    "beforeend", "afterend", "delete", "none"
+    "innerHTML", "outerHTML", "beforebegin", "afterbegin", "beforeend", "afterend", "delete", "none"
 ]
 
 
@@ -25,6 +24,7 @@ class HX:
         hx = HX(get="/api/data", target="#results", swap="innerHTML")
         await html(t'<button {hx}>Load</button>')
     """
+
     get: str | None = None
     post: str | None = None
     put: str | None = None
@@ -90,7 +90,7 @@ class HX:
         if self.confirm:
             attrs.append(f'hx-confirm="{self.confirm}"')
         if self.disable:
-            attrs.append('hx-disable')
+            attrs.append("hx-disable")
         if self.disabled_elt:
             attrs.append(f'hx-disabled-elt="{self.disabled_elt}"')
         if self.indicator:
@@ -112,7 +112,7 @@ class HX:
         if self.history is not None:
             attrs.append(f'hx-history="{str(self.history).lower()}"')
         if self.history_elt:
-            attrs.append('hx-history-elt')
+            attrs.append("hx-history-elt")
         for event, handler in self.on.items():
             attrs.append(f'hx-on:{event}="{handler}"')
 
@@ -126,7 +126,9 @@ class HX:
 async def HtmxScripts(*, debug: bool = False) -> SafeHTML:
     """HTMX script tag."""
     ext = "" if not debug else ".js"
-    return await html(t'<script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min{ext}"></script>')
+    return await html(
+        t'<script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min{ext}"></script>'
+    )
 
 
 async def HtmxExtension(name: str) -> SafeHTML:
@@ -135,6 +137,7 @@ async def HtmxExtension(name: str) -> SafeHTML:
 
 
 # Common HTMX patterns
+
 
 async def LoadingButton(
     children: SafeHTML | str,
@@ -167,7 +170,7 @@ async def InfiniteScroll(
 ) -> SafeHTML:
     """Infinite scroll trigger element."""
     hx = HX(get=src, target=target, swap=swap, trigger=trigger)
-    return await html(t'<div {hx}></div>')
+    return await html(t"<div {hx}></div>")
 
 
 async def LazyLoad(
@@ -179,7 +182,7 @@ async def LazyLoad(
     """Lazy loaded content."""
     hx = HX(get=src, trigger=trigger, swap="outerHTML")
     inner = placeholder or await html(t'<span aria-busy="true">Loading...</span>')
-    return await html(t'<div {hx}>{inner}</div>')
+    return await html(t"<div {hx}>{inner}</div>")
 
 
 async def PollingContent(
@@ -190,7 +193,7 @@ async def PollingContent(
 ) -> SafeHTML:
     """Content that polls for updates."""
     hx = HX(get=src, trigger=f"every {interval}s", swap="innerHTML")
-    return await html(t'<div {hx}>{children}</div>')
+    return await html(t"<div {hx}>{children}</div>")
 
 
 async def SearchInput(

@@ -10,22 +10,54 @@ from fastapi import Depends, FastAPI, Request
 from pydantic import BaseModel, Field, EmailStr
 
 from htmpl import html, SafeHTML, Fragment, fragment
+from htmpl.assets import component
 from htmpl.core import cached_ttl
 from htmpl.elements import (
-    section, div, article, nav, ul, li, main,
-    h1, h2, h3, p, a, strong, small,
-    table, thead, tbody, tr, th, td,
-    form, label, input_, button,
-    details, summary,
+    section,
+    div,
+    article,
+    nav,
+    ul,
+    li,
+    main,
+    h1,
+    h2,
+    h3,
+    p,
+    a,
+    strong,
+    small,
+    table,
+    thead,
+    tbody,
+    tr,
+    th,
+    td,
+    form,
+    label,
+    input_,
+    button,
+    details,
+    summary,
 )
 from htmpl.forms import BaseForm
-from htmpl.fastapi import HTMLRouter, HTMLForm, FormValidationError, form_validation_error_handler, is_htmx
+from htmpl.fastapi import (
+    HTMLRouter,
+    HTMLForm,
+    FormValidationError,
+    form_validation_error_handler,
+    is_htmx,
+    mount_bundles,
+    page,
+    CurrentPage,
+)
 from htmpl.htmx import HX, HtmxScripts, SearchInput, LazyLoad
 from htmpl.components import Document, LucideScripts
 
 router = HTMLRouter()
 
 # Models
+
 
 class User(BaseModel):
     id: int
@@ -44,6 +76,7 @@ class Stats:
 
 
 # Fake async data layer
+
 
 async def get_current_user() -> User | None:
     return User(id=1, username="bob", avatar_url="/avatar/1", points=420, commits=42)
@@ -82,16 +115,23 @@ async def get_user_repos(user_id: int):
 
 # Layout Components
 
+
+@component(
+    css={
+        "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css",
+        "/static/app.css",
+    },
+)
 async def AppPage(title: str, children, user: User | None = None, scripts=None) -> SafeHTML:
-    return await Document(
-        title=f"{title} | Julython",
-        children=AppMain(user, children),
-        scripts=html(t'{HtmxScripts()}{LucideScripts()}{scripts}'),
+    return div(
+        await AppMain(user, children),
+        await html(t"{HtmxScripts()}{LucideScripts()}{scripts}"),
     )
 
+
 async def AppMain(user: User | None, children):
-    not_user = "fake"
     return fragment(t"{AppNav(user)}{main(children, class_='container')}")
+
 
 async def AppNav(user: User | None):
     items = [("Leaderboard", "/board"), ("Projects", "/projects"), ("About", "/about")]
@@ -131,6 +171,7 @@ def HGroup(title: str, subtitle: str):
 
 
 # UI Components
+
 
 def StatCard(lbl: str, value: int | str):
     display = f"{value:,}" if isinstance(value, int) else value
@@ -180,7 +221,7 @@ def RepoRow(name: str, active: bool, commits: int):
     status = "✓ Active" if active else "Inactive"
     return tr(
         td(a(name, href=f"https://github.com/{name}")),
-        td(button(status, class_="outline", **{"_": str(hx)})),  # TODO: better HX integration
+        td(button(status, class_="outline", **{"_": str(hx)})),
         td(str(commits)),
     )
 
@@ -199,21 +240,25 @@ def ButtonLink(text: str, href: str, *, variant: str = "primary"):
 
 # Cached components
 
+
 @cached_ttl(seconds=60)
 async def GlobalStatsBar() -> SafeHTML:
     """Cached for 60 seconds since stats don't change often."""
     stats = await get_stats()
-    return SafeHTML(await Grid(
-        StatCard("Commits", stats.total_commits),
-        StatCard("Participants", stats.participants),
-        StatCard("Days Left", stats.days_remaining),
-        auto=True,
-    ).__html__())
+    return SafeHTML(
+        await Grid(
+            StatCard("Commits", stats.total_commits),
+            StatCard("Participants", stats.participants),
+            StatCard("Days Left", stats.days_remaining),
+            auto=True,
+        ).__html__()
+    )
 
 
 # Routes
 
-@router.get("/")
+
+@router.get("/", dependencies=[page("home", title="Julython", uses={AppPage})])
 async def home() -> SafeHTML:
     user = await get_current_user()
     leaderboard = await get_leaderboard()
@@ -236,13 +281,18 @@ async def home() -> SafeHTML:
     )
 
 
-@router.get("/board", response_model=None)
+@router.get(
+    "/board",
+    dependencies=[page("board", title="Leaderboard", uses={AppPage})],
+    response_model=None,
+)
 async def leaderboard(request: Request, q: str = "") -> SafeHTML:
     users = await get_leaderboard(q)
 
+    # HTMX partial - no layout needed
     if is_htmx(request):
         rows = fragment(*[LeaderboardRow(u, i + 1) for i, u in enumerate(users)])
-        return SafeHTML(rows)
+        return SafeHTML(await rows.__html__())
 
     user = await get_current_user()
     return await AppPage(
@@ -250,22 +300,28 @@ async def leaderboard(request: Request, q: str = "") -> SafeHTML:
         user=user,
         children=fragment(
             h1("Leaderboard"),
-            SearchInput("q", src="/board", target="#leaderboard-body", placeholder="Search users..."),
+            SearchInput(
+                "q", src="/board", target="#leaderboard-body", placeholder="Search users..."
+            ),
             LeaderboardTable(users),
         ),
     )
 
 
-@router.get("/dashboard")
-async def dashboard() -> SafeHTML:
+@router.get(
+    "/dashboard",
+    dependencies=[page("dashboard", title="Dashboard", uses={AppPage})],
+)
+async def dashboard(ctx: CurrentPage) -> SafeHTML:
     user = await get_current_user()
     if not user:
         return await html(t'<meta http-equiv="refresh" content="0;url=/login">')
 
     repos = await get_user_repos(user.id)
 
+    # Example: using ctx.title from the page context
     return await AppPage(
-        "Dashboard",
+        ctx.title,
         user=user,
         children=fragment(
             h1(f"Welcome back, {user.username}"),
@@ -277,7 +333,9 @@ async def dashboard() -> SafeHTML:
             ),
             section(
                 h2("Recent Commits"),
-                LazyLoad("/api/commits/recent", placeholder=article("Loading...", aria_busy="true")),
+                LazyLoad(
+                    "/api/commits/recent", placeholder=article("Loading...", aria_busy="true")
+                ),
                 class_="mt-1",
             ),
             section(
@@ -289,36 +347,53 @@ async def dashboard() -> SafeHTML:
     )
 
 
+# API routes - no page() dependency, just returns fragments
 @router.get("/api/commits/recent", response_model=None)
 async def recent_commits() -> Fragment:
     user = await get_current_user()
     commits = await get_recent_commits(user.id) if user else []
     return fragment(*[CommitCard(msg, repo, pts, ts) for msg, repo, pts, ts in commits])
 
+
+# Forms with page dependency
+
+
 class SettingsForm(BaseForm):
     username: str = Field(description="fancy name for a user")
     email: EmailStr
-    email_digest: bool = Field(json_schema_extra={'role': "switch"})
+    email_digest: bool = Field(json_schema_extra={"role": "switch"})
     notify_mentions: bool
 
 
 async def settings_form(renderer: type[SettingsForm], values, errors):
-    return await AppPage('Edit Settings', children=renderer.render(values=values, errors=errors, submit_text="Edit Account"))
+    user = await get_current_user()
+    return await AppPage(
+        "Edit Settings",
+        user=user,
+        children=renderer.render(values=values, errors=errors, submit_text="Edit Account"),
+    )
 
 
-@router.get("/settings")
-async def signup_get():
+@router.get(
+    "/settings",
+    dependencies=[page("settings", title="Settings", uses={AppPage})],
+)
+async def settings_get():
     user = await get_current_user()
     values = user.model_dump() if user else {}
-
     return await settings_form(SettingsForm, values, {})
 
-@router.post("/settings")
-async def signup(data: SettingsForm = Depends(HTMLForm(SettingsForm, settings_form))):
+
+@router.post(
+    "/settings",
+    dependencies=[page("settings", title="Settings", uses={AppPage})],
+)
+async def settings_post(data: SettingsForm = Depends(HTMLForm(SettingsForm, settings_form))):
     user = await get_current_user()
+    return div("congrats")
 
-    return div('congrats')
 
+mount_bundles(router)
 
 app = FastAPI(debug=True)
 app.include_router(router)
@@ -326,4 +401,5 @@ app.add_exception_handler(FormValidationError, form_validation_error_handler)
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

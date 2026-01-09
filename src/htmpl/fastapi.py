@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import inspect
+from contextvars import ContextVar
+from dataclasses import dataclass
 from functools import wraps
 from inspect import isawaitable
 from string.templatelib import Template
-from typing import Any, Awaitable, Callable, Generic, TypeAlias, TypeVar
+from typing import Annotated, Any, Awaitable, Callable, Generic, TypeAlias, TypeVar
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.routing import APIRoute
 from pydantic import ValidationError
@@ -14,9 +16,11 @@ from pydantic import ValidationError
 from .assets import (
     BUNDLE_DIR,
     Bundles,
+    Page as PageDef,
+    ComponentFunc,
     get_bundles,
     get_pages,
-    page as page_decorator,
+    _pages,
 )
 from .core import SafeHTML, html
 from .elements import Element, Fragment
@@ -41,6 +45,87 @@ async def render_html(result: Any) -> str | None:
         return content
 
     return None
+
+
+# --- Page Context ---
+
+
+@dataclass
+class PageContext:
+    """Runtime page context with resolved bundles."""
+
+    name: str
+    title: str
+    bundles: Bundles
+
+
+_page_ctx: ContextVar[PageContext | None] = ContextVar("page_ctx", default=None)
+
+
+def page(
+    name: str,
+    *,
+    title: str = "Page",
+    css: set[str] | None = None,
+    js: set[str] | None = None,
+    py: set[str] | None = None,
+    uses: set[ComponentFunc] | None = None,
+):
+    """
+    Page dependency - registers assets at import time, sets up context at request time.
+
+    Usage:
+        @router.get("/", dependencies=[page("home", title="Home", uses={AppPage, NavBar})])
+        async def home():
+            return section(h1("Welcome"))
+
+        # Access context if needed
+        @router.get("/dashboard", dependencies=[page("dashboard", title="Dashboard")])
+        async def dashboard(ctx: CurrentPage):
+            return section(h1(ctx.title))
+    """
+    # Resolve component names from functions
+    imports: set[str] = set()
+    for comp in uses or set():
+        if not callable(comp):
+            raise TypeError(f"Expected a component function, got {type(comp).__name__}")
+        comp_name = getattr(comp, "_htmpl_component", None)
+        if comp_name is None:
+            raise TypeError(
+                f"'{comp.__name__}' is not a registered component. "
+                f"Add the @component decorator to register it."
+            )
+        imports.add(comp_name)
+
+    # Static registration at import time
+    _pages[name] = PageDef(
+        name=name,
+        title=title,
+        css=css or set(),
+        js=js or set(),
+        py=py or set(),
+        imports=imports,
+    )
+
+    # Runtime dependency
+    def setup_page_context() -> PageContext:
+        ctx = PageContext(
+            name=name,
+            title=title,
+            bundles=get_bundles(name),
+        )
+        _page_ctx.set(ctx)
+        return ctx
+
+    return Depends(setup_page_context)
+
+
+def get_page() -> PageContext | None:
+    """Get current page context. Returns None if not in a page route."""
+    return _page_ctx.get()
+
+
+CurrentPage = Annotated[PageContext, Depends(get_page)]
 
 
 # --- Layout ---
@@ -68,28 +153,10 @@ def default_layout(content: str, title: str, bundles: Bundles) -> str:
 
 
 class HTMLRoute(APIRoute):
-    """Route that auto-converts Element/SafeHTML to HTMLResponse."""
-
-    def __init__(self, path: str, endpoint: Callable[..., Any], **kwargs):
-        @wraps(endpoint)
-        async def html_endpoint(*args, **kwargs):
-            result = endpoint(*args, **kwargs)
-            if isawaitable(result):
-                result = await result
-
-            content = await render_html(result)
-            if content is not None:
-                return HTMLResponse(content)
-            return result
-
-        # Preserve signature for FastAPI's dependency injection
-        html_endpoint.__signature__ = inspect.signature(endpoint)  # type: ignore
-
-        super().__init__(path, html_endpoint, **kwargs)
-
-
-class PageRoute(APIRoute):
-    """Route that wraps response with layout and bundled assets."""
+    """
+    Route that auto-converts Element/SafeHTML to HTMLResponse.
+    If page context is set, wraps with layout.
+    """
 
     def __init__(
         self,
@@ -99,11 +166,10 @@ class PageRoute(APIRoute):
         layout: LayoutFunc | None = None,
         **kwargs,
     ):
-        page_name = getattr(endpoint, "_htmpl_page", None)
         layout_fn = layout or default_layout
 
         @wraps(endpoint)
-        async def page_endpoint(*args, **kwargs):
+        async def html_endpoint(*args, **kwargs):
             result = endpoint(*args, **kwargs)
             if isawaitable(result):
                 result = await result
@@ -112,23 +178,20 @@ class PageRoute(APIRoute):
             if content is None:
                 return result
 
-            # Get page metadata
-            pages = get_pages()
-            page_def = pages.get(page_name) if page_name else None
-            title = page_def.title if page_def else "Page"
+            # Check for page context (set by page() dependency)
+            ctx = _page_ctx.get()
+            if ctx:
+                final = layout_fn(content, ctx.title, ctx.bundles)
+                if isawaitable(final):
+                    final = await final
+                return HTMLResponse(final)
 
-            # Get bundled assets
-            bundles = get_bundles(page_name) if page_name else Bundles()
+            return HTMLResponse(content)
 
-            # Apply layout
-            final = layout_fn(content, title, bundles)
-            if isawaitable(final):
-                final = await final
+        # Preserve signature for FastAPI's dependency injection
+        html_endpoint.__signature__ = inspect.signature(endpoint)  # type: ignore
 
-            return HTMLResponse(final)
-
-        page_endpoint.__signature__ = inspect.signature(endpoint)  # type: ignore
-        super().__init__(path, page_endpoint, **kwargs)
+        super().__init__(path, html_endpoint, **kwargs)
 
 
 # --- Form Handling ---
@@ -166,7 +229,6 @@ class HTMLForm(Generic[T]):
         @router.post("/login")
         async def handle_login(
             data: LoginSchema = Depends(HTMLForm(LoginSchema, login_page)),
-            user: User = Depends(get_current_user)
         ):
             # Only reached if validation succeeds
             return htmx_redirect("/dashboard")
@@ -196,87 +258,51 @@ class HTMLForm(Generic[T]):
             errors = parse_form_errors(e)
 
             # Render the template with errors
-            html = await self.template(self.model, values, errors)
-            content = await render_html(html)
+            html_result = await self.template(self.model, values, errors)
+            content = await render_html(html_result)
 
-            # Raise exception to short-circuit and return the rendered form
-            raise FormValidationError(content or "<div>Invalid Form</div")
+            raise FormValidationError(content or "<div>Invalid Form</div>")
 
 
 class HTMLRouter(APIRouter):
     """
-    Router with HTML rendering and page bundling support.
+    Router with HTML rendering support.
 
     Usage:
         router = HTMLRouter()
 
-        # Simple fragment (no bundling)
+        # Simple fragment (no layout)
         @router.get("/fragment")
         async def fragment():
             return div(h1("Hello"))
 
-        # Full page with bundling
-        @router.page(
-            "/dashboard",
-            title="Dashboard",
-            css={"/static/css/dashboard.css"},
-            imports={"main_nav", "dropdown"},
-        )
-        async def dashboard(request: Request):
+        # Full page with layout and bundling
+        @router.get("/", dependencies=[page("home", title="Home", imports={"nav"})])
+        async def home():
             return section(h1("Dashboard"))
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, layout: LayoutFunc | None = None, **kwargs):
+        self._layout = layout
         kwargs.setdefault("route_class", HTMLRoute)
         super().__init__(*args, **kwargs)
 
-    def page(
+    def add_api_route(
         self,
         path: str,
+        endpoint: Callable[..., Any],
         *,
-        title: str = "Page",
-        css: set[str] | None = None,
-        js: set[str] | None = None,
-        py: set[str] | None = None,
-        imports: set[str] | None = None,
         layout: LayoutFunc | None = None,
         **kwargs,
-    ):
-        """
-        Decorator for page routes with asset bundling.
-
-        Args:
-            path: URL path
-            title: Page title
-            css: Page-specific CSS files
-            js: Page-specific JS files
-            py: Page-specific PyScript files
-            imports: Component names this page uses
-            layout: Custom layout function
-        """
-
-        def decorator(fn: Callable) -> Callable:
-            # Register page with assets module
-            decorated = page_decorator(
-                title=title,
-                css=css,
-                js=js,
-                py=py,
-                imports=imports,
-            )(fn)
-
-            # Add route with PageRoute
-            route = PageRoute(
-                path,
-                decorated,
-                layout=layout,
-                methods=kwargs.pop("methods", ["GET"]),
-                **kwargs,
-            )
-            self.routes.append(route)
-            return decorated
-
-        return decorator
+    ) -> None:
+        """Override to pass layout to HTMLRoute."""
+        route = HTMLRoute(
+            path,
+            endpoint,
+            layout=layout or self._layout,
+            **kwargs,
+        )
+        self.routes.append(route)
 
 
 # --- Bundle Serving ---
@@ -303,6 +329,9 @@ def mount_bundles(router: APIRouter, path: str = "/static/bundles") -> None:
             media_type=media,
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
+
+
+# --- HTMX Helpers ---
 
 
 def is_htmx(request: Request) -> bool:

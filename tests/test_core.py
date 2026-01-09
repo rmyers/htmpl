@@ -73,13 +73,15 @@ class TestAttr:
     @pytest.mark.asyncio
     async def test_attr_in_template(self):
         active = True
-        result = await html(t'<a {attr("aria-current", "page" if active else None)}>Link</a>')
+        result = await html(t"<a {attr('aria-current', 'page' if active else None)}>Link</a>")
         assert 'aria-current="page"' in result.content
 
     @pytest.mark.asyncio
     async def test_attr_none_in_template(self):
         active = False
-        result = await html(t'<a href="/" {attr("aria-current", "page" if active else None)}>Link</a>')
+        result = await html(
+            t'<a href="/" {attr("aria-current", "page" if active else None)}>Link</a>'
+        )
         assert "aria-current" not in result.content
 
 

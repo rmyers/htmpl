@@ -4,12 +4,37 @@ Tests for htmpl element factories.
 
 import pytest
 from htmpl.elements import (
-    Element, Fragment, fragment,
-    div, span, p, a, h1, h2,
-    ul, li, table, tr, td, th,
-    form, label, input_, button, select, option, textarea,
-    article, section, header, footer, nav, main,
-    img, br, hr,
+    Element,
+    Fragment,
+    fragment,
+    div,
+    span,
+    p,
+    a,
+    h1,
+    h2,
+    ul,
+    li,
+    table,
+    tr,
+    td,
+    th,
+    form,
+    label,
+    input_,
+    button,
+    select,
+    option,
+    textarea,
+    article,
+    section,
+    header,
+    footer,
+    nav,
+    main,
+    img,
+    br,
+    hr,
 )
 
 
@@ -122,6 +147,7 @@ class TestChildrenEscaping:
     @pytest.mark.asyncio
     async def test_safehtml_not_escaped(self):
         from htmpl import SafeHTML
+
         el = div(SafeHTML("<strong>bold</strong>"))
         html = await el.__html__()
         assert "<strong>bold</strong>" in html

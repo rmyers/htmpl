@@ -15,6 +15,7 @@ AlertVariant = Literal["info", "success", "warning", "error"]
 
 # Layout Components
 
+
 async def Document(
     title: str,
     children: SafeHTML,
@@ -25,7 +26,9 @@ async def Document(
     scripts: SafeHTML | None = None,
 ) -> SafeHTML:
     """Base HTML document with Pico CSS."""
-    meta_desc = await html(t'<meta name="description" content="{description}">') if description else None
+    meta_desc = (
+        await html(t'<meta name="description" content="{description}">') if description else None
+    )
 
     return await html(t'''<!DOCTYPE html>
 <html lang="en" data-theme="{theme}">
@@ -80,17 +83,18 @@ async def Page(
         description=description,
         head=head,
         scripts=scripts,
-        children=await html(t'''
+        children=await html(t"""
             {nav}
             <main class="container">
                 {children}
             </main>
             {footer}
-        '''),
+        """),
     )
 
 
 # Navigation
+
 
 async def Nav(
     brand: str,
@@ -99,13 +103,17 @@ async def Nav(
     end_items: SafeHTML | None = None,
 ) -> SafeHTML:
     """Primary navigation bar."""
-    links = await html(t'{[NavLink(label, href) for label, href in items]}')
-    return await html(t'<nav class="container"><ul><li><strong>{brand}</strong></li></ul><ul>{links}{end_items}</ul></nav>')
+    links = await html(t"{[NavLink(label, href) for label, href in items]}")
+    return await html(
+        t'<nav class="container"><ul><li><strong>{brand}</strong></li></ul><ul>{links}{end_items}</ul></nav>'
+    )
 
 
 async def NavLink(label: str, href: str, *, active: bool = False) -> SafeHTML:
     """Navigation link item."""
-    return await html(t'<li><a href="{href}" {attr("aria-current", "page" if active else None)}>{label}</a></li>')
+    return await html(
+        t'<li><a href="{href}" {attr("aria-current", "page" if active else None)}>{label}</a></li>'
+    )
 
 
 async def Dropdown(
@@ -115,8 +123,10 @@ async def Dropdown(
     align: Literal["left", "right"] = "left",
 ) -> SafeHTML:
     """Dropdown menu."""
-    menu_items = await html(t'{[DropdownItem(lbl, href) for lbl, href in items]}')
-    return await html(t'<li><details class="dropdown"><summary>{label}</summary><ul {attr("dir", "rtl" if align == "right" else None)}>{menu_items}</ul></details></li>')
+    menu_items = await html(t"{[DropdownItem(lbl, href) for lbl, href in items]}")
+    return await html(
+        t'<li><details class="dropdown"><summary>{label}</summary><ul {attr("dir", "rtl" if align == "right" else None)}>{menu_items}</ul></details></li>'
+    )
 
 
 async def DropdownItem(label: str, href: str) -> SafeHTML:
@@ -125,6 +135,7 @@ async def DropdownItem(label: str, href: str) -> SafeHTML:
 
 # Cards & Containers
 
+
 async def Card(
     children: SafeHTML,
     *,
@@ -132,9 +143,9 @@ async def Card(
     footer: SafeHTML | None = None,
 ) -> SafeHTML:
     """Article card component."""
-    header = await html(t'<header>{title}</header>') if title else None
-    foot = await html(t'<footer>{footer}</footer>') if footer else None
-    return await html(t'<article>{header}{children}{foot}</article>')
+    header = await html(t"<header>{title}</header>") if title else None
+    foot = await html(t"<footer>{footer}</footer>") if footer else None
+    return await html(t"<article>{header}{children}{foot}</article>")
 
 
 async def Grid(children: SafeHTML, *, auto: bool = False) -> SafeHTML:
@@ -145,10 +156,11 @@ async def Grid(children: SafeHTML, *, auto: bool = False) -> SafeHTML:
 
 async def HGroup(title: str, subtitle: str) -> SafeHTML:
     """Heading group with title and subtitle."""
-    return await html(t'<hgroup><h1>{title}</h1><p>{subtitle}</p></hgroup>')
+    return await html(t"<hgroup><h1>{title}</h1><p>{subtitle}</p></hgroup>")
 
 
 # Forms
+
 
 async def Form(
     children: SafeHTML,
@@ -158,7 +170,9 @@ async def Form(
     enctype: str | None = None,
 ) -> SafeHTML:
     """Form wrapper."""
-    return await html(t'<form action="{action}" method="{method}" {attr("enctype", enctype)}>{children}</form>')
+    return await html(
+        t'<form action="{action}" method="{method}" {attr("enctype", enctype)}>{children}</form>'
+    )
 
 
 async def Field(
@@ -177,9 +191,11 @@ async def Field(
     """Form field with label, input, and optional error/hint."""
     hint_id = f"{name}-hint" if hint or error else None
     hint_el = await html(t'<small id="{hint_id}">{error or hint}</small>') if hint_id else None
-    input_el = await html(t'<input type="{type}" name="{name}" value="{value}" placeholder="{placeholder}" required="{required}" disabled="{disabled}" readonly="{readonly}" {attr("aria-invalid", "true" if error else None)} {attr("aria-describedby", hint_id)}>')
+    input_el = await html(
+        t'<input type="{type}" name="{name}" value="{value}" placeholder="{placeholder}" required="{required}" disabled="{disabled}" readonly="{readonly}" {attr("aria-invalid", "true" if error else None)} {attr("aria-describedby", hint_id)}>'
+    )
 
-    return await html(t'<label>{label}{input_el}{hint_el}</label>')
+    return await html(t"<label>{label}{input_el}{hint_el}</label>")
 
 
 async def TextArea(
@@ -193,8 +209,10 @@ async def TextArea(
     disabled: bool = False,
 ) -> SafeHTML:
     """Textarea field."""
-    textarea = await html(t'<textarea name="{name}" placeholder="{placeholder}" rows="{rows}" required="{required}" disabled="{disabled}">{value}</textarea>')
-    return await html(t'<label>{label}{textarea}</label>')
+    textarea = await html(
+        t'<textarea name="{name}" placeholder="{placeholder}" rows="{rows}" required="{required}" disabled="{disabled}">{value}</textarea>'
+    )
+    return await html(t"<label>{label}{textarea}</label>")
 
 
 async def Select(
@@ -207,9 +225,11 @@ async def Select(
     disabled: bool = False,
 ) -> SafeHTML:
     """Select dropdown."""
-    opts = await html(t'{[SelectOption(v, txt, selected) for v, txt in options]}')
-    select_el = await html(t'<select name="{name}" required="{required}" disabled="{disabled}">{opts}</select>')
-    return await html(t'<label>{label}{select_el}</label>')
+    opts = await html(t"{[SelectOption(v, txt, selected) for v, txt in options]}")
+    select_el = await html(
+        t'<select name="{name}" required="{required}" disabled="{disabled}">{opts}</select>'
+    )
+    return await html(t"<label>{label}{select_el}</label>")
 
 
 async def SelectOption(value: str, text: str, selected: str) -> SafeHTML:
@@ -226,7 +246,9 @@ async def Checkbox(
 ) -> SafeHTML:
     """Checkbox input."""
     chk = "checked" if checked else ""
-    return await html(t'<label><input type="checkbox" name="{name}" {chk} disabled="{disabled}">{label}</label>')
+    return await html(
+        t'<label><input type="checkbox" name="{name}" {chk} disabled="{disabled}">{label}</label>'
+    )
 
 
 async def Button(
@@ -239,7 +261,9 @@ async def Button(
 ) -> SafeHTML:
     """Button component."""
     cls = "" if variant == "primary" else variant
-    return await html(t'<button type="{type}" class="{cls}" disabled="{disabled}" {attr("aria-busy", "true" if busy else None)}>{children}</button>')
+    return await html(
+        t'<button type="{type}" class="{cls}" disabled="{disabled}" {attr("aria-busy", "true" if busy else None)}>{children}</button>'
+    )
 
 
 async def ButtonLink(
@@ -255,6 +279,7 @@ async def ButtonLink(
 
 # Feedback
 
+
 async def Alert(
     children: SafeHTML | str,
     *,
@@ -263,13 +288,13 @@ async def Alert(
     """Alert/notice component using ins/del/mark elements."""
     match variant:
         case "success":
-            return await html(t'<ins>{children}</ins>')
+            return await html(t"<ins>{children}</ins>")
         case "error":
-            return await html(t'<del>{children}</del>')
+            return await html(t"<del>{children}</del>")
         case "warning":
-            return await html(t'<mark>{children}</mark>')
+            return await html(t"<mark>{children}</mark>")
         case _:
-            return await html(t'<p><small>{children}</small></p>')
+            return await html(t"<p><small>{children}</small></p>")
 
 
 async def Modal(
@@ -281,36 +306,46 @@ async def Modal(
 ) -> SafeHTML:
     """Dialog modal."""
     open_attr = "open" if open else ""
-    header = await html(t'<header><button aria-label="Close" rel="prev" onclick="this.closest(\'dialog\').close()"></button><h3>{title}</h3></header>') if title else None
-    return await html(t'<dialog id="{id}" {open_attr}><article>{header}{children}</article></dialog>')
+    header = (
+        await html(
+            t'<header><button aria-label="Close" rel="prev" onclick="this.closest(\'dialog\').close()"></button><h3>{title}</h3></header>'
+        )
+        if title
+        else None
+    )
+    return await html(
+        t'<dialog id="{id}" {open_attr}><article>{header}{children}</article></dialog>'
+    )
 
 
 # Data Display
+
 
 async def Table(
     headers: list[str],
     rows: list[list[Any]],
 ) -> SafeHTML:
     """Data table."""
-    head = await html(t'{[TableHeader(h) for h in headers]}')
-    body = await html(t'{[TableRow(row) for row in rows]}')
-    return await html(t'<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>')
+    head = await html(t"{[TableHeader(h) for h in headers]}")
+    body = await html(t"{[TableRow(row) for row in rows]}")
+    return await html(t"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>")
 
 
 async def TableHeader(text: str) -> SafeHTML:
-    return await html(t'<th>{text}</th>')
+    return await html(t"<th>{text}</th>")
 
 
 async def TableRow(cells: list[Any]) -> SafeHTML:
     """Table row."""
-    return await html(t'<tr>{[TableCell(c) for c in cells]}</tr>')
+    return await html(t"<tr>{[TableCell(c) for c in cells]}</tr>")
 
 
 async def TableCell(content: Any) -> SafeHTML:
-    return await html(t'<td>{content}</td>')
+    return await html(t"<td>{content}</td>")
 
 
 # Loading States
+
 
 async def Loading(*, text: str = "Loading...") -> SafeHTML:
     """Loading indicator."""
@@ -324,6 +359,7 @@ async def Skeleton(*, height: str = "1rem") -> SafeHTML:
 
 # Utilities
 
+
 @cached
 async def Icon(name: str, *, size: int = 24, label: str | None = None) -> SafeHTML:
     """Lucide icon via CDN. Cached since these are static."""
@@ -334,10 +370,10 @@ async def Icon(name: str, *, size: int = 24, label: str | None = None) -> SafeHT
 @cached
 async def LucideScripts() -> SafeHTML:
     """Script tags for Lucide icons."""
-    return await html(t'''
+    return await html(t"""
         <script src="https://unpkg.com/lucide@latest"></script>
         <script>lucide.createIcons();</script>
-    ''')
+    """)
 
 
 async def VisuallyHidden(children: SafeHTML | str) -> SafeHTML:
