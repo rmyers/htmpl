@@ -115,7 +115,7 @@ def component(
             imports=imports,
         )
         fn._htmpl_component = comp_name
-        return fn
+        return fn  # type: ignore
 
     return decorator
 
@@ -226,8 +226,8 @@ class Bundles:
         return {"css": self.css, "js": self.js, "py": self.py}
 
 
-def create_bundle(files: set[str], name: str, ext: str, header: str = "") -> str | None:
-    """Create a bundled file from a set of source files."""
+def create_bundle(files: set[str], ext: str, header: str = "") -> str | None:
+    """Create a bundled file from a set of source files. Filename is content-hash only."""
     if not files:
         return None
 
@@ -235,6 +235,7 @@ def create_bundle(files: set[str], name: str, ext: str, header: str = "") -> str
 
     comment = {"css": "/*", "js": "//", "py": "#"}[ext]
     end = " */" if ext == "css" else ""
+    prefix = {"css": "styles", "js": "scripts", "py": "pyscripts"}[ext]
 
     parts = [header] if header else []
     local_files = set()
@@ -250,7 +251,7 @@ def create_bundle(files: set[str], name: str, ext: str, header: str = "") -> str
         parts.append(f"{comment} {f}{end}\n{_read(f)}")
 
     content = "\n\n".join(parts)
-    filename = f"{name}.{_hash(content)}.{ext}"
+    filename = f"{prefix}-{_hash(content)}.{ext}"
     path = BUNDLE_DIR / filename
 
     if not path.exists():
@@ -266,9 +267,9 @@ def bundle_page(page_name: str) -> Bundles:
     py_header = "from pyscript import document, when, fetch, window\nfrom pyscript.ffi import create_proxy\n"
 
     return Bundles(
-        css=create_bundle(assets.css, page_name, "css"),
-        js=create_bundle(assets.js, page_name, "js"),
-        py=create_bundle(assets.py, page_name, "py", py_header),
+        css=create_bundle(assets.css, "css"),
+        js=create_bundle(assets.js, "js"),
+        py=create_bundle(assets.py, "py", py_header),
     )
 
 
