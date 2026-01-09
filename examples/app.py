@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI, Request
 from pydantic import BaseModel, Field, EmailStr
 
 from htmpl import html, SafeHTML, Fragment, fragment
-from htmpl.assets import component
+from htmpl.assets import Bundles, component
 from htmpl.core import cached_ttl
 from htmpl.elements import (
     section,
@@ -53,6 +53,7 @@ from htmpl.fastapi import (
 )
 from htmpl.htmx import HX, HtmxScripts, SearchInput, LazyLoad
 from htmpl.components import Document, LucideScripts
+
 
 router = HTMLRouter()
 

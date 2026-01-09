@@ -92,7 +92,7 @@ def page(
         comp_name = getattr(comp, "_htmpl_component", None)
         if comp_name is None:
             raise TypeError(
-                f"'{comp.__name__}' is not a registered component. "
+                f"'{type(comp).__name__}' is not a registered component. "
                 f"Add the @component decorator to register it."
             )
         imports.add(comp_name)
@@ -107,14 +107,15 @@ def page(
         imports=imports,
     )
 
-    # Runtime dependency
-    def setup_page_context() -> PageContext:
+    # Runtime dependency - uses request.state for cross-context access
+    def setup_page_context(request: Request) -> PageContext:
         ctx = PageContext(
             name=name,
             title=title,
             bundles=get_bundles(name),
         )
-        _page_ctx.set(ctx)
+        request.state.htmpl_page = ctx
+        _page_ctx.set(ctx)  # Also set contextvar for CurrentPage
         return ctx
 
     return Depends(setup_page_context)
@@ -167,10 +168,18 @@ class HTMLRoute(APIRoute):
         **kwargs,
     ):
         layout_fn = layout or default_layout
+        orig_sig = inspect.signature(endpoint)
+
+        # Check if endpoint already has request param
+        has_request = any(p.name == "request" for p in orig_sig.parameters.values())
 
         @wraps(endpoint)
-        async def html_endpoint(*args, **kwargs):
-            result = endpoint(*args, **kwargs)
+        async def html_endpoint(request: Request, **kw):
+            # Pass request to original endpoint if it expects it
+            if has_request:
+                kw["request"] = request
+
+            result = endpoint(**kw)
             if isawaitable(result):
                 result = await result
 
@@ -178,8 +187,8 @@ class HTMLRoute(APIRoute):
             if content is None:
                 return result
 
-            # Check for page context (set by page() dependency)
-            ctx = _page_ctx.get()
+            # Check for page context from request.state
+            ctx = getattr(request.state, "htmpl_page", None)
             if ctx:
                 final = layout_fn(content, ctx.title, ctx.bundles)
                 if isawaitable(final):
@@ -188,8 +197,17 @@ class HTMLRoute(APIRoute):
 
             return HTMLResponse(content)
 
-        # Preserve signature for FastAPI's dependency injection
-        html_endpoint.__signature__ = inspect.signature(endpoint)  # type: ignore
+        # Build signature: add request if not present, keep all others
+        params = [
+            inspect.Parameter(
+                "request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request
+            )
+        ]
+        for p in orig_sig.parameters.values():
+            if p.name != "request":
+                params.append(p)
+
+        html_endpoint.__signature__ = orig_sig.replace(parameters=params)  # type: ignore
 
         super().__init__(path, html_endpoint, **kwargs)
 
