@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import inspect
-from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 from inspect import isawaitable
@@ -59,7 +58,12 @@ class PageContext:
     bundles: Bundles
 
 
-_page_ctx: ContextVar[PageContext | None] = ContextVar("page_ctx", default=None)
+def get_page(request: Request) -> PageContext | None:
+    """Get current page context from request state."""
+    return getattr(request.state, "htmpl_page", None)
+
+
+CurrentPage = Annotated[PageContext, Depends(get_page)]
 
 
 def page(
@@ -107,7 +111,7 @@ def page(
         imports=imports,
     )
 
-    # Runtime dependency - uses request.state for cross-context access
+    # Runtime dependency
     def setup_page_context(request: Request) -> PageContext:
         ctx = PageContext(
             name=name,
@@ -115,18 +119,9 @@ def page(
             bundles=get_bundles(name),
         )
         request.state.htmpl_page = ctx
-        _page_ctx.set(ctx)  # Also set contextvar for CurrentPage
         return ctx
 
     return Depends(setup_page_context)
-
-
-def get_page() -> PageContext | None:
-    """Get current page context. Returns None if not in a page route."""
-    return _page_ctx.get()
-
-
-CurrentPage = Annotated[PageContext, Depends(get_page)]
 
 
 # --- Layout ---
@@ -169,17 +164,19 @@ class HTMLRoute(APIRoute):
     ):
         layout_fn = layout or default_layout
         orig_sig = inspect.signature(endpoint)
+        orig_params = list(orig_sig.parameters.values())
 
         # Check if endpoint already has request param
-        has_request = any(p.name == "request" for p in orig_sig.parameters.values())
+        has_request = "request" in orig_sig.parameters
 
         @wraps(endpoint)
-        async def html_endpoint(request: Request, **kw):
-            # Pass request to original endpoint if it expects it
+        async def html_endpoint(request: Request, *args, **kw):
+            # Call original endpoint
             if has_request:
-                kw["request"] = request
+                result = endpoint(request=request, *args, **kw)
+            else:
+                result = endpoint(*args, **kw)
 
-            result = endpoint(**kw)
             if isawaitable(result):
                 result = await result
 
@@ -197,17 +194,17 @@ class HTMLRoute(APIRoute):
 
             return HTMLResponse(content)
 
-        # Build signature: add request if not present, keep all others
-        params = [
+        # Build new signature with request first, then original params (minus request if present)
+        new_params = [
             inspect.Parameter(
                 "request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request
             )
         ]
-        for p in orig_sig.parameters.values():
+        for p in orig_params:
             if p.name != "request":
-                params.append(p)
+                new_params.append(p)
 
-        html_endpoint.__signature__ = orig_sig.replace(parameters=params)  # type: ignore
+        html_endpoint.__signature__ = inspect.Signature(parameters=new_params)  # type: ignore
 
         super().__init__(path, html_endpoint, **kwargs)
 
