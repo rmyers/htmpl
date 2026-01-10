@@ -4,13 +4,14 @@ Example Julython-style app using htmpl with Elements.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from fastapi import Depends, FastAPI, Request
 from pydantic import BaseModel, Field, EmailStr
 
 from htmpl import html, SafeHTML, Fragment, fragment
-from htmpl.assets import Bundles, component
+from htmpl.assets import component
 from htmpl.core import cached_ttl
 from htmpl.elements import (
     section,
@@ -52,7 +53,7 @@ from htmpl.fastapi import (
     CurrentPage,
 )
 from htmpl.htmx import HX, HtmxScripts, SearchInput, LazyLoad
-from htmpl.components import Document, LucideScripts
+from htmpl.components import LucideScripts
 
 
 router = HTMLRouter()
@@ -117,12 +118,7 @@ async def get_user_repos(user_id: int):
 # Layout Components
 
 
-@component(
-    css={
-        "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css",
-        "/static/app.css",
-    },
-)
+@component(css={"/static/css/app.css"})
 async def AppPage(title: str, children, user: User | None = None, scripts=None) -> SafeHTML:
     return div(
         await AppMain(user, children),
@@ -398,7 +394,9 @@ mount_bundles(router)
 
 app = FastAPI(debug=True)
 app.include_router(router)
-app.add_exception_handler(FormValidationError, form_validation_error_handler)
+app.add_exception_handler(FormValidationError, form_validation_error_handler)  # type: ignore
+
+logging.basicConfig(level=logging.INFO)
 
 if __name__ == "__main__":
     import uvicorn

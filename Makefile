@@ -31,7 +31,7 @@ app_dir ?= $(shell git rev-parse --show-prefix)
 conda_env_dir ?= $(base_dir)/env
 
 # Export environment variables
-export PYTHONPATH = ./src
+export PYTHONPATH = $(base_dir)/src
 
 # Setup conda lock
 CONDA_EXE ?= conda
@@ -91,10 +91,10 @@ pre-commit:  ## Run pre-commit on the repo
 	pre-commit run --verbose --show-diff-on-failure --color=always --all-files
 
 dev: ## Run example
-	$(conda_run) python examples/app.py
+	cd examples && $(conda_run) python app.py
 
 dev-forms: ## Run example
-	$(conda_run) python examples/forms.py
+	cd examples && $(conda_run) python forms.py
 
 repl:  ## Get a python repl that is configured properly
 	$(conda_run) python

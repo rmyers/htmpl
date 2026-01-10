@@ -1,3 +1,5 @@
+@import "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css";
+
 :root { --pico-font-size: 100%; }
 .grid-auto { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .text-center { text-align: center; }
@@ -13,4 +15,9 @@
     overflow: hidden;
     clip: rect(0, 0, 0, 0);
     border: 0;
+}
+a {
+    &:hover {
+        padding: 6px;
+    }
 }

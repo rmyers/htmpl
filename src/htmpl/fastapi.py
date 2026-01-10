@@ -395,9 +395,7 @@ def htmx_trigger_event(
     after: str = "settle",
 ) -> Response:
     """Return content and trigger a client-side event."""
-    header = (
-        f"HX-Trigger-After-{after.capitalize()}" if after != "receive" else "HX-Trigger"
-    )
+    header = f"HX-Trigger-After-{after.capitalize()}" if after != "receive" else "HX-Trigger"
     return Response(
         content=content.content,
         headers={header: event},

@@ -1,25 +1,29 @@
-# htmpl/assets.py
 """Asset registration and bundling system."""
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Protocol, runtime_checkable
+from typing import Awaitable, Callable, Protocol, cast, runtime_checkable
 import hashlib
 import json
 import os
-import httpx
+import subprocess
+import shutil
+import logging
 
 from .core import SafeHTML
 
 BUNDLE_DIR = Path(os.environ.get("HTMPL_BUNDLE_DIR", "static/bundles"))
 PREBUILT = os.environ.get("HTMPL_PREBUILT") == "1"
+MINIFY = os.environ.get("HTMPL_MINIFY", "1") == "1"
+
+# Check for esbuild binary
+ESBUILD = shutil.which("esbuild")
 
 _components: dict[str, "Component"] = {}
 _pages: dict[str, "Page"] = {}
 _manifest: dict | None = None
 
-
-# --- Component Type ---
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -96,9 +100,7 @@ def component(
         imports: set[str] = set()
         for comp in uses or set():
             if not callable(comp):
-                raise TypeError(
-                    f"Expected a component function, got {type(comp).__name__}"
-                )
+                raise TypeError(f"Expected a component function, got {type(comp).__name__}")
             dep_name = getattr(comp, "_htmpl_component", None)
             if dep_name is None:
                 raise TypeError(
@@ -114,8 +116,9 @@ def component(
             py=py or set(),
             imports=imports,
         )
+        fn = cast(ComponentFunc, fn)
         fn._htmpl_component = comp_name
-        return fn  # type: ignore
+        return fn
 
     return decorator
 
@@ -195,11 +198,6 @@ def _hash(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:12]
 
 
-def _read(path: str) -> str:
-    p = Path(path.lstrip("/"))
-    return p.read_text() if p.exists() else ""
-
-
 @dataclass
 class Bundles:
     """Bundle URLs for a page."""
@@ -226,50 +224,80 @@ class Bundles:
         return {"css": self.css, "js": self.js, "py": self.py}
 
 
-def create_bundle(files: set[str], ext: str, header: str = "") -> str | None:
-    """Create a bundled file from a set of source files. Filename is content-hash only."""
+def _bundle_with_esbuild(files: list[Path], outfile: Path) -> bool:
+    """Bundle files using esbuild. Returns True on success."""
+    try:
+        cmd = [
+            ESBUILD,
+            *[str(f) for f in files],
+            "--bundle",
+            f"--outfile={outfile}",
+        ]
+        if MINIFY:
+            cmd.append("--minify")
+        subprocess.run(cmd, check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError as exc:
+        logger.warning(f"esbuild failed: {exc.stderr} {exc.stdout}")
+        return False
+
+
+def create_bundle(files: set[str], ext: str) -> str | None:
+    """Create a bundled file from a set of source files."""
     if not files:
         return None
 
     BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
 
-    comment = {"css": "/*", "js": "//", "py": "#"}[ext]
-    end = " */" if ext == "css" else ""
     prefix = {"css": "styles", "js": "scripts", "py": "pyscripts"}[ext]
 
-    parts = [header] if header else []
-    local_files = set()
-    for f in files:
-        if not f.startswith("http"):
-            local_files.add(f)
-        else:
-            with httpx.Client() as client:
-                resp = client.get(f)
-                parts.append(resp.text)
+    # Resolve local file paths
+    local_files: list[Path] = []
+    file_names: list[str] = []
+    for f in sorted(files):
+        p = Path(f.lstrip("/"))
+        if p.exists():
+            local_files.append(p)
+            # store the name and modify time to generate hash
+            file_names.append(f"{p.name}-{p.stat().st_mtime}")
 
-    for f in sorted(local_files):  # Sort for deterministic output
-        parts.append(f"{comment} {f}{end}\n{_read(f)}")
+    if not local_files:
+        return None
 
-    content = "\n\n".join(parts)
-    filename = f"{prefix}-{_hash(content)}.{ext}"
+    file_hash = _hash(":".join(file_names))
+    filename = f"{prefix}-{file_hash}.{ext}"
     path = BUNDLE_DIR / filename
+    # TODO(rmyers): this needs to be configurable
+    final_path = f"/static/bundles/{filename}"
 
-    if not path.exists():
-        path.write_text(content)
+    if path.exists():
+        return final_path
 
-    return f"/static/bundles/{filename}"
+    # Try esbuild for CSS/JS
+    if ext in ("css", "js") and ESBUILD:
+        logger.info("building...")
+
+        if _bundle_with_esbuild(local_files, path):
+            return final_path
+
+    _fallback_bundle(local_files, path)
+    return final_path
+
+
+def _fallback_bundle(files: list[Path], outfile: Path) -> None:
+    """Manual concatenation fallback when esbuild unavailable."""
+    parts = [f.read_text() for f in files]
+    outfile.write_text("\n\n".join(parts))
 
 
 def bundle_page(page_name: str) -> Bundles:
     """Create all bundles for a page."""
     assets = resolve_page(page_name)
 
-    py_header = "from pyscript import document, when, fetch, window\nfrom pyscript.ffi import create_proxy\n"
-
     return Bundles(
         css=create_bundle(assets.css, "css"),
         js=create_bundle(assets.js, "js"),
-        py=create_bundle(assets.py, "py", py_header),
+        py=create_bundle(assets.py, "py"),
     )
 
 
