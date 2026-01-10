@@ -101,9 +101,11 @@ repl:  ## Get a python repl that is configured properly
 
 clean:  ## Clean up cache and temporary files and stop containers
 	find . -name \*.py[cod] -delete
-	rm -rf .pytest_cache .mypy_cache .coverage coverage.xml htmlcov junit
-	docker compose down --remove-orphans
+	rm -rf .pytest_cache .mypy_cache .coverage coverage.xml htmlcov junit dist
 
-clean-all: clean  ## Clean up build files and docker images
-	rm -rf $(conda_env_dir) *.egg-info
-	docker compose down --remove-orphans --rmi all
+build:  ## Run uv build
+	rm -rf dist
+	uv build
+
+publist:  ## Run uv publish
+	uv publish

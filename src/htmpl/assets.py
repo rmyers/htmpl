@@ -100,7 +100,9 @@ def component(
         imports: set[str] = set()
         for comp in uses or set():
             if not callable(comp):
-                raise TypeError(f"Expected a component function, got {type(comp).__name__}")
+                raise TypeError(
+                    f"Expected a component function, got {type(comp).__name__}"
+                )
             dep_name = getattr(comp, "_htmpl_component", None)
             if dep_name is None:
                 raise TypeError(
@@ -224,21 +226,41 @@ class Bundles:
         return {"css": self.css, "js": self.js, "py": self.py}
 
 
-def _bundle_with_esbuild(files: list[Path], outfile: Path) -> bool:
+def _bundle_with_esbuild(files: list[Path], outfile: Path, ext: str) -> bool:
     """Bundle files using esbuild. Returns True on success."""
+
     try:
+        # Create a temp entry file that imports all sources
+        entry = outfile.with_suffix(f".entry.{ext}")
+
+        if ext == "css":
+            imports = "\n".join(f'@import "{f.resolve()}";' for f in files)
+        else:  # js
+            imports = "\n".join(f'import "{f.resolve()}";' for f in files)
+
+        entry.write_text(imports)
+
         cmd = [
             ESBUILD,
-            *[str(f) for f in files],
+            str(entry),
             "--bundle",
             f"--outfile={outfile}",
+            "--external:*.png",
+            "--external:*.jpg",
+            "--external:*.gif",
+            "--external:*.svg",
+            "--external:*.woff",
+            "--external:*.woff2",
         ]
         if MINIFY:
             cmd.append("--minify")
         subprocess.run(cmd, check=True, capture_output=True)
+        entry.unlink()
         return True
     except subprocess.CalledProcessError as exc:
         logger.warning(f"esbuild failed: {exc.stderr} {exc.stdout}")
+        if entry.exists():
+            entry.unlink()
         return False
 
 
@@ -277,7 +299,7 @@ def create_bundle(files: set[str], ext: str) -> str | None:
     if ext in ("css", "js") and ESBUILD:
         logger.info("building...")
 
-        if _bundle_with_esbuild(local_files, path):
+        if _bundle_with_esbuild(local_files, path, ext):
             return final_path
 
     _fallback_bundle(local_files, path)

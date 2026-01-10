@@ -1,6 +1,6 @@
 [project]
 name = "htmpl"
-version = "0.2.0"
+version = "0.2.1"
 description = "Type-safe HTML templating with Python 3.14 t-strings"
 readme = "README.md"
 license = "MIT"
