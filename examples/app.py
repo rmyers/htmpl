@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from pprint import pprint
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Request
@@ -14,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr
 
 from htmpl import html, SafeHTML, raw
-from htmpl.assets import Bundles, component, layout, get_pages, get_components
+from htmpl.assets import Bundles, component, layout, registry, save_manifest
 from htmpl.core import cached_ttl
 from htmpl.elements import (
     section,
@@ -373,8 +374,8 @@ app.mount("/static", StaticFiles(directory=Path("static"), check_dir=False), nam
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
-logger.info(f"{get_pages()}")
-logger.info(f"{get_components()}")
+logger.info(f"{pprint(registry.pages)}")
+save_manifest()
 
 if __name__ == "__main__":
     import uvicorn

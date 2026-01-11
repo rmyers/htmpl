@@ -21,9 +21,11 @@ from fastapi.routing import APIRoute
 from pydantic import ValidationError
 
 from .assets import (
-    _pages,
+    registry,
     AssetCollector,
+    Bundles,
     ComponentFunc,
+    LayoutFunc,
     Page,
     PageContext,
 )
@@ -75,10 +77,12 @@ def page(
     """
     # Register page at import time for pre-building
     layout_name = getattr(layout, "_htmpl_layout", None) if layout else None
-    _pages[name] = Page(
-        name=name,
-        title=title,
-        layout=layout_name,
+    registry.add_page(
+        Page(
+            name=name,
+            title=title,
+            layout=layout_name,
+        )
     )
 
     if layout is not None and hasattr(layout, "_htmpl_layout"):

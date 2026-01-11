@@ -6,10 +6,10 @@ from typing import Awaitable, Callable, Protocol, TypeAlias, cast, runtime_check
 import hashlib
 import json
 import os
-import time
 import subprocess
 import shutil
 import logging
+import time
 
 from .core import SafeHTML
 
@@ -17,13 +17,7 @@ BUNDLE_DIR = Path(os.environ.get("HTMPL_BUNDLE_DIR", "static/bundles"))
 PREBUILT = os.environ.get("HTMPL_PREBUILT") == "1"
 MINIFY = os.environ.get("HTMPL_MINIFY", "1") == "1"
 
-# Check for esbuild binary
 ESBUILD = shutil.which("esbuild")
-
-_components: dict[str, "Component"] = {}
-_layouts: dict[str, "Component"] = {}
-_pages: dict[str, "Page"] = {}
-_manifest: dict | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +98,83 @@ class LayoutRenderer(Protocol):
 LayoutFunc: TypeAlias = Callable[[SafeHTML, str, Bundles], Awaitable[SafeHTML]]
 
 
+# --- Registry ---
+
+
+class Registry:
+    """
+    Singleton registry for components, layouts, and pages.
+
+    Usage:
+        from htmpl.assets import registry
+
+        # Register
+        registry.add_component(comp)
+        registry.add_page(page)
+
+        # Retrieve
+        comp = registry.get_component("name")
+        pages = registry.pages
+    """
+
+    _instance: "Registry | None" = None
+    _components: dict[str, Component]
+    _layouts: dict[str, Component]
+    _pages: dict[str, Page]
+    _manifest: dict | None
+
+    def __new__(cls) -> "Registry":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._components = {}
+            cls._instance._layouts = {}
+            cls._instance._pages = {}
+            cls._instance._manifest = None
+        return cls._instance
+
+    @property
+    def components(self) -> dict[str, Component]:
+        return self._components.copy()
+
+    @property
+    def layouts(self) -> dict[str, Component]:
+        return self._layouts.copy()
+
+    @property
+    def pages(self) -> dict[str, Page]:
+        return self._pages.copy()
+
+    def add_component(self, comp: Component) -> None:
+        self._components[comp.name] = comp
+
+    def add_layout(self, comp: Component) -> None:
+        self._components[comp.name] = comp
+        self._layouts[comp.name] = comp
+
+    def add_page(self, page: Page) -> None:
+        self._pages[page.name] = page
+
+    def get_component(self, name: str) -> Component | None:
+        return self._components.get(name)
+
+    def get_layout(self, name: str) -> Component | None:
+        return self._layouts.get(name)
+
+    def get_page(self, name: str) -> Page | None:
+        return self._pages.get(name)
+
+    def clear(self) -> None:
+        """Clear all registrations. Useful for testing."""
+        self._components.clear()
+        self._layouts.clear()
+        self._pages.clear()
+        self._manifest = None
+
+
+# Global singleton instance
+registry = Registry()
+
+
 # --- Asset Collection ---
 
 
@@ -122,7 +193,7 @@ class AssetCollector:
             return
         self._seen.add(comp_name)
 
-        comp = _components.get(comp_name)
+        comp = registry.get_component(comp_name)
         if comp:
             self.css |= comp.css
             self.js |= comp.js
@@ -180,18 +251,11 @@ def component(
         py={"/static/py/dropdown.py"},
     )
     async def dropdown(trigger, items): ...
-
-    @component(
-        css={"/static/css/account.css"},
-        uses={dropdown},  # Reference other components directly
-    )
-    async def account_menu(user): ...
     """
 
     def decorator(fn: Callable) -> ComponentFunc:
         comp_name = name or fn.__name__
 
-        # Resolve component references to names
         imports: set[str] = set()
         for comp in uses or set():
             if not callable(comp):
@@ -206,12 +270,14 @@ def component(
                 )
             imports.add(dep_name)
 
-        _components[comp_name] = Component(
-            name=comp_name,
-            css=css or set(),
-            js=js or set(),
-            py=py or set(),
-            imports=imports,
+        registry.add_component(
+            Component(
+                name=comp_name,
+                css=css or set(),
+                js=js or set(),
+                py=py or set(),
+                imports=imports,
+            )
         )
         fn = cast(ComponentFunc, fn)
         fn._htmpl_component = comp_name
@@ -230,46 +296,28 @@ def layout(
     """
     Register a layout with its assets.
 
-    Layouts are components that return a renderer function. The renderer
-    receives content, title, and bundles, and returns the full page HTML.
+    Layouts are components that return a renderer function.
 
-    Usage:
-        @layout(css={"/static/app.css"})
-        async def AppLayout(
-            nav: Annotated[SafeHTML, use_component(NavBar)],
-            footer: Annotated[SafeHTML, use_component(Footer)],
-        ):
-            async def render(content: SafeHTML, title: str, bundles: Bundles) -> SafeHTML:
-                return await html(t'''<!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="utf-8">
-                    <title>{title}</title>
-                    {raw(bundles.head())}
-                </head>
-                <body>
-                    {nav}
-                    <main>{content}</main>
-                    {footer}
-                </body>
-                </html>''')
-            return render
-
-        @router.get("/", dependencies=[page("home", title="Home", layout=AppLayout)])
-        async def home():
-            return section(h1("Welcome"))
+    @layout(css={"/static/app.css"})
+    async def AppLayout(
+        nav: Annotated[SafeHTML, use_component(NavBar)],
+    ):
+        async def render(content: SafeHTML, title: str, bundles: Bundles) -> SafeHTML:
+            return await html(t'...')
+        return render
     """
 
     def decorator(fn: Callable) -> Callable:
         layout_name = name or fn.__name__
 
-        _components[layout_name] = Component(
-            name=layout_name,
-            css=css or set(),
-            js=js or set(),
-            py=py or set(),
+        registry.add_layout(
+            Component(
+                name=layout_name,
+                css=css or set(),
+                js=js or set(),
+                py=py or set(),
+            )
         )
-        _layouts[layout_name] = _components[layout_name]
 
         fn._htmpl_layout = layout_name
         return fn
@@ -302,17 +350,15 @@ def resolve_component(comp_name: str, seen: set[str] | None = None) -> ResolvedA
         return ResolvedAssets()
     seen.add(comp_name)
 
-    comp = _components.get(comp_name)
+    comp = registry.get_component(comp_name)
     if not comp:
         return ResolvedAssets()
 
     assets = ResolvedAssets()
 
-    # Resolve imports first (depth-first)
     for imp in comp.imports:
         assets.merge(resolve_component(imp, seen))
 
-    # Then add this component's assets
     assets.css |= comp.css
     assets.js |= comp.js
     assets.py |= comp.py
@@ -322,22 +368,19 @@ def resolve_component(comp_name: str, seen: set[str] | None = None) -> ResolvedA
 
 def resolve_page(page_name: str) -> ResolvedAssets:
     """Resolve all assets for a page including all imported components."""
-    page_def = _pages.get(page_name)
+    page_def = registry.get_page(page_name)
     if not page_def:
         return ResolvedAssets()
 
     assets = ResolvedAssets()
     seen: set[str] = set()
 
-    # Layout first
     if page_def.layout:
         assets.merge(resolve_component(page_def.layout, seen))
 
-    # Then imported components
     for imp in page_def.imports:
         assets.merge(resolve_component(imp, seen))
 
-    # Finally page-specific assets
     assets.css |= page_def.css
     assets.js |= page_def.js
     assets.py |= page_def.py
@@ -417,15 +460,16 @@ def create_bundle(files: set[str], ext: str) -> str | None:
 
     logger.info(f"building: {filename} from: {file_names}")
     start_time = time.perf_counter()
+
     if ext in ("css", "js") and ESBUILD:
         if _bundle_with_esbuild(local_files, path, ext):
             elapsed_ms = (time.perf_counter() - start_time) * 1000
-            logger.info(f"built {filename} with esbuild in {elapsed_ms:.1f}ms")
+            logger.info(f"built with esbuild in {elapsed_ms:.1f}ms")
             return final_path
 
     _fallback_bundle(local_files, path)
     elapsed_ms = (time.perf_counter() - start_time) * 1000
-    logger.info(f"built {filename} with fallback bundler in {elapsed_ms:.1f}ms")
+    logger.info(f"built with fallback in {elapsed_ms:.1f}ms")
     return final_path
 
 
@@ -452,7 +496,7 @@ def save_manifest() -> None:
     """Save all page bundles to manifest."""
     BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
     data = {"pages": {}}
-    for name in _pages:
+    for name in registry.pages:
         bundles = bundle_page(name)
         data["pages"][name] = bundles.to_dict()
     (BUNDLE_DIR / "manifest.json").write_text(json.dumps(data, indent=2))
@@ -460,11 +504,12 @@ def save_manifest() -> None:
 
 def load_manifest() -> dict | None:
     """Load manifest from disk (cached)."""
-    global _manifest
-    if _manifest is None:
+    if registry._manifest is None:
         path = BUNDLE_DIR / "manifest.json"
-        _manifest = json.loads(path.read_text()) if path.exists() else {"pages": {}}
-    return _manifest
+        registry._manifest = (
+            json.loads(path.read_text()) if path.exists() else {"pages": {}}
+        )
+    return registry._manifest
 
 
 def get_bundles(page_name: str) -> Bundles:
@@ -474,14 +519,3 @@ def get_bundles(page_name: str) -> Bundles:
             data = manifest.get("pages", {}).get(page_name, {})
             return Bundles(css=data.get("css"), js=data.get("js"), py=data.get("py"))
     return bundle_page(page_name)
-
-
-# --- Introspection ---
-
-
-def get_components() -> dict[str, Component]:
-    return _components.copy()
-
-
-def get_pages() -> dict[str, Page]:
-    return _pages.copy()
