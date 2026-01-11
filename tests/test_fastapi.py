@@ -3,14 +3,14 @@ Tests for htmpl FastAPI integration.
 """
 
 import pytest
-from fastapi import FastAPI, Request, Depends
+from fastapi import APIRouter, FastAPI, Request, Depends
 from fastapi.testclient import TestClient
 from pydantic import Field, EmailStr
 
 from htmpl import html, forms, SafeHTML
 from htmpl.elements import section, h1, p, div, article, form, button
 from htmpl.fastapi import (
-    HTMLRouter,
+    HTMLRoute,
     HTMLForm,
     FormValidationError,
     form_validation_error_handler,
@@ -28,7 +28,7 @@ class TestRouter:
     @pytest.fixture
     def app(self):
         app = FastAPI()
-        router = HTMLRouter()
+        router = APIRouter(route_class=HTMLRoute)
 
         @router.get("/")
         async def home():
@@ -89,7 +89,7 @@ class TestFormRouter:
     @pytest.fixture
     def app(self):
         app = FastAPI()
-        router = HTMLRouter()
+        router = APIRouter(route_class=HTMLRoute)
 
         class LoginSchema(forms.BaseForm):
             email: EmailStr = Field(examples=["foo@bar.com"], description="Your email dah")
@@ -163,7 +163,7 @@ class TestFormRouter:
         assert response.status_code == 200
         assert "Welcome, user@example.com!" in response.text
 
-    def test_form_post_invalid_email(self, client):
+    def test_form_post_invalid_email(self, client: TestClient):
         response = client.post(
             "/login",
             data={
@@ -335,7 +335,7 @@ class TestIntegration:
     @pytest.fixture
     def app(self):
         app = FastAPI()
-        router = HTMLRouter()
+        router = APIRouter(route_class=HTMLRoute)
 
         @router.get("/")
         async def home() -> SafeHTML:

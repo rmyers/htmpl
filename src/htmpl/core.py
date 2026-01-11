@@ -56,6 +56,9 @@ class SafeHTML:
             return SafeHTML(other.content + self.content)
         return SafeHTML(escape(str(other)) + self.content)
 
+    def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+        return self.content.encode(encoding, errors)
+
 
 def raw(content: str) -> SafeHTML:
     """Mark a string as safe/pre-escaped HTML. Use with caution."""

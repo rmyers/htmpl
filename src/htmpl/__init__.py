@@ -31,9 +31,8 @@ from .components import (
     Grid,
 )
 from .fastapi import (
-    HTML,
     HTMLForm,
-    HTMLRouter,
+    HTMLRoute,
     FormValidationError,
     form_validation_error_handler,
 )
@@ -72,9 +71,8 @@ __all__ = [
     "Table",
     "Grid",
     # FastAPI
-    "HTML",
     "HTMLForm",
-    "HTMLRouter",
+    "HTMLRoute",
     "FormValidationError",
     "form_validation_error_handler",
     # Forms

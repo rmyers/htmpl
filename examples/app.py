@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Annotated
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr
 
-from htmpl import html, SafeHTML, Fragment, fragment
-from htmpl.assets import component
+from htmpl import html, SafeHTML, raw
+from htmpl.assets import Bundles, component, layout, get_pages, get_components
 from htmpl.core import cached_ttl
 from htmpl.elements import (
     section,
@@ -40,23 +43,25 @@ from htmpl.elements import (
     button,
     details,
     summary,
+    fragment,
+    script,
 )
 from htmpl.forms import BaseForm
 from htmpl.fastapi import (
-    HTMLRouter,
+    HTMLRoute,
     HTMLForm,
     FormValidationError,
     form_validation_error_handler,
     is_htmx,
-    mount_bundles,
     page,
     CurrentPage,
+    use_component,
+    layout
 )
-from htmpl.htmx import HX, HtmxScripts, SearchInput, LazyLoad
-from htmpl.components import LucideScripts
 
 
-router = HTMLRouter()
+router = APIRouter(route_class=HTMLRoute)
+
 
 # Models
 
@@ -115,22 +120,93 @@ async def get_user_repos(user_id: int):
     ]
 
 
-# Layout Components
+# Pure functions - no async needed, just return Elements
 
 
-@component(css={"/static/css/app.css"})
-async def AppPage(title: str, children, user: User | None = None, scripts=None) -> SafeHTML:
-    return div(
-        await AppMain(user, children),
-        await html(t"{HtmxScripts()}{LucideScripts()}{scripts}"),
+def HGroup(title: str, subtitle: str):
+    return div(h1(title), p(subtitle), role="group")
+
+
+def StatCard(lbl: str, value: int | str):
+    display = f"{value:,}" if isinstance(value, int) else value
+    return article(div(h2(display), p(lbl, class_="text-muted"), class_="text-center"))
+
+
+def Grid(*children, auto: bool = False):
+    cls = "grid grid-auto" if auto else "grid"
+    return div(*children, class_=cls)
+
+
+def LeaderboardRow(user: User, rank: int):
+    return tr(
+        td(str(rank)),
+        td(a(user.username, href=f"/u/{user.username}")),
+        td(str(user.commits)),
+        td(strong(f"{user.points:,}")),
     )
 
 
-async def AppMain(user: User | None, children):
-    return fragment(t"{AppNav(user)}{main(children, class_='container')}")
+def LeaderboardTable(users: list[User]):
+    return table(
+        thead(tr(th("#"), th("User"), th("Commits"), th("Points"))),
+        tbody([LeaderboardRow(u, i + 1) for i, u in enumerate(users)], id="leaderboard-body"),
+    )
 
 
-async def AppNav(user: User | None):
+def CommitCard(message: str, repo: str, points: int, timestamp: str):
+    return article(
+        p(strong(repo)),
+        p(message),
+        small(f"{timestamp} · +{points} pts", class_="text-muted"),
+    )
+
+
+def RepoRow(name: str, active: bool, commits: int):
+    status = "✓ Active" if active else "Inactive"
+    return tr(
+        td(a(name, href=f"https://github.com/{name}")),
+        td(button(status, class_="outline", hx_post=f"/api/repos/{name}/toggle", hx_swap="outerHTML")),
+        td(str(commits)),
+    )
+
+
+def RepoTable(repos: list[tuple[str, bool, int]]):
+    return table(
+        thead(tr(th("Repository"), th("Tracking"), th("Commits"))),
+        tbody([RepoRow(name, active, commits) for name, active, commits in repos]),
+    )
+
+
+def ButtonLink(text: str, href: str, *, variant: str = "primary"):
+    cls = "" if variant == "primary" else variant
+    return a(text, href=href, role="button", class_=cls)
+
+
+def SearchInput(name: str, *, src: str, target: str, placeholder: str = "Search..."):
+    """Sync search input - just returns an Element."""
+    return input_(
+        type="search",
+        name=name,
+        placeholder=placeholder,
+        hx_get=src,
+        hx_target=target,
+        hx_trigger="input changed delay:300ms, search",
+        hx_swap="innerHTML",
+    )
+
+
+def LazyLoad(src: str, *, placeholder=None):
+    """Sync lazy load container."""
+    inner = placeholder or article("Loading...", aria_busy="true")
+    return div(inner, hx_get=src, hx_trigger="load", hx_swap="outerHTML")
+
+
+# Layout Components
+
+
+@component()
+async def AppNav():
+    user = await get_current_user()
     items = [("Leaderboard", "/board"), ("Projects", "/projects"), ("About", "/about")]
 
     if user:
@@ -151,254 +227,156 @@ async def AppNav(user: User | None):
 
     return nav(
         ul(li(a(strong("Julython"), href="/"))),
-        ul(
-            [li(a(lbl, href=href)) for lbl, href in items],
-            end,
-        ),
+        ul([li(a(lbl, href=href)) for lbl, href in items], end),
         class_="container",
     )
 
 
-def HGroup(title: str, subtitle: str):
-    return div(
-        h1(title),
-        p(subtitle),
-        role="group",
-    )
-
-
-# UI Components
-
-
-def StatCard(lbl: str, value: int | str):
-    display = f"{value:,}" if isinstance(value, int) else value
-    return article(
-        div(
-            h2(display),
-            p(lbl, class_="text-muted"),
-            class_="text-center",
-        ),
-    )
-
-
-def Grid(*children, auto: bool = False):
-    cls = "grid grid-auto" if auto else "grid"
-    return div(*children, class_=cls)
-
-
-def LeaderboardRow(user: User, rank: int):
-    return tr(
-        td(str(rank)),
-        td(a(user.username, href=f"/u/{user.username}")),
-        td(str(user.commits)),
-        td(strong(f"{user.points:,}")),
-    )
-
-
-def LeaderboardTable(users: list[User]):
-    return table(
-        thead(tr(th("#"), th("User"), th("Commits"), th("Points"))),
-        tbody(
-            [LeaderboardRow(u, i + 1) for i, u in enumerate(users)],
-            id="leaderboard-body",
-        ),
-    )
-
-
-def CommitCard(message: str, repo: str, points: int, timestamp: str):
-    return article(
-        p(strong(repo)),
-        p(message),
-        small(f"{timestamp} · +{points} pts", class_="text-muted"),
-    )
-
-
-def RepoRow(name: str, active: bool, commits: int):
-    hx = HX(post=f"/api/repos/{name}/toggle", swap="outerHTML")
-    status = "✓ Active" if active else "Inactive"
-    return tr(
-        td(a(name, href=f"https://github.com/{name}")),
-        td(button(status, class_="outline", **{"_": str(hx)})),
-        td(str(commits)),
-    )
-
-
-def RepoTable(repos: list[tuple[str, bool, int]]):
-    return table(
-        thead(tr(th("Repository"), th("Tracking"), th("Commits"))),
-        tbody([RepoRow(name, active, commits) for name, active, commits in repos]),
-    )
-
-
-def ButtonLink(text: str, href: str, *, variant: str = "primary"):
-    cls = "" if variant == "primary" else variant
-    return a(text, href=href, role="button", class_=cls)
-
-
-# Cached components
-
-
-@cached_ttl(seconds=60)
-async def GlobalStatsBar() -> SafeHTML:
-    """Cached for 60 seconds since stats don't change often."""
-    stats = await get_stats()
-    return SafeHTML(
-        await Grid(
-            StatCard("Commits", stats.total_commits),
-            StatCard("Participants", stats.participants),
-            StatCard("Days Left", stats.days_remaining),
-            auto=True,
-        ).__html__()
-    )
+@layout(css={"/static/css/app.css"})
+async def AppPage(navbar: Annotated[SafeHTML, use_component(AppNav)]):
+    async def render(content: SafeHTML, title: str, bundles: Bundles) -> SafeHTML:
+        return await html(t'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{title}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    {raw(bundles.head())}
+</head>
+<body>
+    {navbar}
+    <main class="container">{content}</main>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+</body>
+</html>''')
+    return render
 
 
 # Routes
 
 
-@router.get("/", dependencies=[page("home", title="Julython", uses={AppPage})])
-async def home() -> SafeHTML:
-    user = await get_current_user()
+@router.get("/", dependencies=[page("home", title="Julython", layout=AppPage)])
+async def home():
+    stats = await get_stats()
     leaderboard = await get_leaderboard()
 
-    return await AppPage(
-        "Home",
-        user=user,
-        children=fragment(
-            section(
-                HGroup("Julython", "A month-long celebration of coding in July"),
-                GlobalStatsBar(),
+    return fragment(
+        section(
+            HGroup("Julython", "A month-long celebration of coding in July"),
+            Grid(
+                StatCard("Commits", stats.total_commits),
+                StatCard("Participants", stats.participants),
+                StatCard("Days Left", stats.days_remaining),
+                auto=True,
             ),
-            section(
-                h2("Leaderboard"),
-                LeaderboardTable(leaderboard[:10]),
-                ButtonLink("View Full Leaderboard", "/board", variant="secondary"),
-                class_="mt-1",
-            ),
+        ),
+        section(
+            h2("Leaderboard"),
+            LeaderboardTable(leaderboard[:10]),
+            ButtonLink("View Full Leaderboard", "/board", variant="secondary"),
+            class_="mt-1",
         ),
     )
 
 
-@router.get(
-    "/board",
-    dependencies=[page("board", title="Leaderboard", uses={AppPage})],
-    response_model=None,
-)
-async def leaderboard(request: Request, q: str = "") -> SafeHTML:
+@router.get("/board", dependencies=[page("board", title="Leaderboard", layout=AppPage)])
+async def leaderboard(request: Request, q: str = ""):
     users = await get_leaderboard(q)
 
-    # HTMX partial - no layout needed
+    # HTMX partial - just the rows
     if is_htmx(request):
-        rows = fragment(*[LeaderboardRow(u, i + 1) for i, u in enumerate(users)])
-        return SafeHTML(await rows.__html__())
+        return fragment(*[LeaderboardRow(u, i + 1) for i, u in enumerate(users)])
 
-    user = await get_current_user()
-    return await AppPage(
-        "Leaderboard",
-        user=user,
-        children=fragment(
-            h1("Leaderboard"),
-            SearchInput(
-                "q", src="/board", target="#leaderboard-body", placeholder="Search users..."
-            ),
-            LeaderboardTable(users),
-        ),
+    return fragment(
+        h1("Leaderboard"),
+        SearchInput("q", src="/board", target="#leaderboard-body", placeholder="Search users..."),
+        LeaderboardTable(users),
     )
 
 
-@router.get(
-    "/dashboard",
-    dependencies=[page("dashboard", title="Dashboard", uses={AppPage})],
-)
-async def dashboard(ctx: CurrentPage) -> SafeHTML:
+@router.get("/dashboard", dependencies=[page("dashboard", title="Dashboard", layout=AppPage)])
+async def dashboard(ctx: CurrentPage):
     user = await get_current_user()
     if not user:
         return await html(t'<meta http-equiv="refresh" content="0;url=/login">')
 
     repos = await get_user_repos(user.id)
 
-    # Example: using ctx.title from the page context
-    return await AppPage(
-        ctx.title,
-        user=user,
-        children=fragment(
-            h1(f"Welcome back, {user.username}"),
-            Grid(
-                StatCard("Your Points", user.points),
-                StatCard("Your Commits", user.commits),
-                StatCard("Rank", "#2"),
-                auto=True,
-            ),
-            section(
-                h2("Recent Commits"),
-                LazyLoad(
-                    "/api/commits/recent", placeholder=article("Loading...", aria_busy="true")
-                ),
-                class_="mt-1",
-            ),
-            section(
-                h2("Your Repos"),
-                RepoTable(repos),
-                class_="mt-1",
-            ),
+    return fragment(
+        h1(f"Welcome back, {user.username}"),
+        Grid(
+            StatCard("Your Points", user.points),
+            StatCard("Your Commits", user.commits),
+            StatCard("Rank", "#2"),
+            auto=True,
+        ),
+        section(
+            h2("Recent Commits"),
+            LazyLoad("/api/commits/recent"),
+            class_="mt-1",
+        ),
+        section(
+            h2("Your Repos"),
+            RepoTable(repos),
+            class_="mt-1",
         ),
     )
 
 
-# API routes - no page() dependency, just returns fragments
-@router.get("/api/commits/recent", response_model=None)
-async def recent_commits() -> Fragment:
+# API routes - fragments only, no layout
+@router.get("/api/commits/recent")
+async def recent_commits():
     user = await get_current_user()
     commits = await get_recent_commits(user.id) if user else []
     return fragment(*[CommitCard(msg, repo, pts, ts) for msg, repo, pts, ts in commits])
 
 
-# Forms with page dependency
+# Forms
 
 
 class SettingsForm(BaseForm):
-    username: str = Field(description="fancy name for a user")
+    username: str = Field(description="Your display name")
     email: EmailStr
-    email_digest: bool = Field(json_schema_extra={"role": "switch"})
-    notify_mentions: bool
+    email_digest: bool = Field(default=False, json_schema_extra={"form_widget": "checkbox", "role": "switch"})
+    notify_mentions: bool = Field(default=True, json_schema_extra={"form_widget": "checkbox"})
 
 
-async def settings_form(renderer: type[SettingsForm], values, errors):
-    user = await get_current_user()
-    return await AppPage(
-        "Edit Settings",
-        user=user,
-        children=renderer.render(values=values, errors=errors, submit_text="Edit Account"),
+async def settings_page(renderer: type[SettingsForm], values: dict, errors: dict):
+    return fragment(
+        h1("Settings"),
+        renderer.render(action="/settings", values=values, errors=errors, submit_text="Save"),
     )
 
 
-@router.get(
-    "/settings",
-    dependencies=[page("settings", title="Settings", uses={AppPage})],
-)
+@router.get("/settings", dependencies=[page("settings", title="Settings", layout=AppPage)])
 async def settings_get():
     user = await get_current_user()
-    values = user.model_dump() if user else {}
-    return await settings_form(SettingsForm, values, {})
+    values = {"username": user.username, "email": "bob@example.com"} if user else {}
+    return await settings_page(SettingsForm, values, {})
 
 
-@router.post(
-    "/settings",
-    dependencies=[page("settings", title="Settings", uses={AppPage})],
-)
-async def settings_post(data: SettingsForm = Depends(HTMLForm(SettingsForm, settings_form))):
-    user = await get_current_user()
-    return div("congrats")
+@router.post("/settings", dependencies=[page("settings", title="Settings", layout=AppPage)])
+async def settings_post(data: SettingsForm = Depends(HTMLForm(SettingsForm, settings_page))):
+    return fragment(
+        h1("Settings"),
+        article(p("Settings saved successfully!")),
+    )
 
 
-mount_bundles(router)
+# App setup
 
 app = FastAPI(debug=True)
 app.include_router(router)
 app.add_exception_handler(FormValidationError, form_validation_error_handler)  # type: ignore
+app.mount("/static", StaticFiles(directory=Path("static"), check_dir=False), name="static")
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
+
+logger.info(f"{get_pages()}")
+logger.info(f"{get_components()}")
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

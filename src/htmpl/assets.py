@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Protocol, cast, runtime_checkable
+from typing import Awaitable, Callable, Protocol, TypeAlias, cast, runtime_checkable
 import hashlib
 import json
 import os
@@ -20,6 +20,7 @@ MINIFY = os.environ.get("HTMPL_MINIFY", "1") == "1"
 ESBUILD = shutil.which("esbuild")
 
 _components: dict[str, "Component"] = {}
+_layouts: dict[str, "Component"] = {}
 _pages: dict[str, "Page"] = {}
 _manifest: dict | None = None
 
@@ -37,6 +38,17 @@ class ComponentFunc(Protocol):
     _htmpl_component: str
 
     def __call__(self, *args, **kwargs) -> Awaitable[SafeHTML]: ...
+
+
+class LayoutRenderer(Protocol):
+    """Protocol for layout render functions."""
+
+    def __call__(
+        self, content: SafeHTML, title: str, bundles: "Bundles"
+    ) -> Awaitable[SafeHTML]: ...
+
+
+LayoutFunc: TypeAlias = Callable[[SafeHTML, str, "Bundles"], Awaitable[SafeHTML]]
 
 
 # --- Data Classes ---
@@ -64,6 +76,60 @@ class Page:
     py: set[str] = field(default_factory=set)
     imports: set[str] = field(default_factory=set)
     layout: str | None = None
+
+
+@dataclass
+class AssetCollector:
+    """Collects assets from rendered components during a request."""
+
+    css: set[str] = field(default_factory=set)
+    js: set[str] = field(default_factory=set)
+    py: set[str] = field(default_factory=set)
+    _seen: set[str] = field(default_factory=set)
+
+    def add(self, comp_name: str) -> None:
+        """Register a component's assets. Idempotent."""
+        if comp_name in self._seen:
+            return
+        self._seen.add(comp_name)
+
+        comp = _components.get(comp_name)
+        if comp:
+            self.css |= comp.css
+            self.js |= comp.js
+            self.py |= comp.py
+
+    def bundles(self) -> Bundles:
+        """Generate bundles from collected assets."""
+        return Bundles(
+            css=create_bundle(self.css, "css"),
+            js=create_bundle(self.js, "js"),
+            py=create_bundle(self.py, "py"),
+        )
+
+
+@dataclass
+class PageContext:
+    """Runtime page context with asset collection and layout."""
+
+    name: str
+    title: str
+    layout: LayoutFunc | None = None
+    assets: AssetCollector = field(default_factory=AssetCollector)
+    _bundles: Bundles | None = field(default=None, repr=False)
+
+    @property
+    def bundles(self) -> Bundles:
+        """Lazily generate bundles from collected assets."""
+        if self._bundles is None:
+            self._bundles = self.assets.bundles()
+        return self._bundles
+
+    async def render(self, content: SafeHTML) -> SafeHTML:
+        """Render content through the page's layout."""
+        if self.layout is None:
+            return content
+        return await self.layout(content, self.title, self.bundles)
 
 
 # --- Decorators ---
@@ -120,6 +186,63 @@ def component(
         )
         fn = cast(ComponentFunc, fn)
         fn._htmpl_component = comp_name
+        return fn
+
+    return decorator
+
+
+def layout(
+    name: str | None = None,
+    *,
+    css: set[str] | None = None,
+    js: set[str] | None = None,
+    py: set[str] | None = None,
+):
+    """
+    Register a layout with its assets.
+
+    Layouts are components that return a renderer function. The renderer
+    receives content, title, and bundles, and returns the full page HTML.
+
+    Usage:
+        @layout(css={"/static/app.css"})
+        async def AppLayout(
+            nav: Annotated[SafeHTML, use_component(NavBar)],
+            footer: Annotated[SafeHTML, use_component(Footer)],
+        ):
+            async def render(content: SafeHTML, title: str, bundles: Bundles) -> SafeHTML:
+                return await html(t'''<!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="utf-8">
+                    <title>{title}</title>
+                    {raw(bundles.head())}
+                </head>
+                <body>
+                    {nav}
+                    <main>{content}</main>
+                    {footer}
+                </body>
+                </html>''')
+            return render
+
+        @router.get("/", dependencies=[page("home", title="Home", layout=AppLayout)])
+        async def home():
+            return section(h1("Welcome"))
+    """
+
+    def decorator(fn: Callable) -> Callable:
+        layout_name = name or fn.__name__
+
+        _components[layout_name] = Component(
+            name=layout_name,
+            css=css or set(),
+            js=js or set(),
+            py=py or set(),
+        )
+        _layouts[layout_name] = _components[layout_name]
+
+        fn._htmpl_layout = layout_name
         return fn
 
     return decorator
