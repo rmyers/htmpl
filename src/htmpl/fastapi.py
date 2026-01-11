@@ -85,9 +85,8 @@ def page(
         )
     )
 
-    if layout is not None and hasattr(layout, "_htmpl_layout"):
+    if layout is not None and layout_name:
         # Layout is a component - merge its signature into setup
-        layout_name = layout._htmpl_layout
         layout_sig = inspect.signature(layout, eval_str=True)
 
         # Build params: Request first, then layout's params
@@ -343,7 +342,7 @@ class HTMLForm(Generic[T]):
     def __init__(
         self,
         model: type[T],
-        template: Callable[[type[T], dict, dict], Awaitable[Any]],
+        template: Callable[[type[T], dict, dict], Awaitable[SafeHTML]],
     ):
         self.model = model
         self.template = template
@@ -365,49 +364,3 @@ class HTMLForm(Generic[T]):
             html_result = await self.template(self.model, values, errors)
             content = await render_html(html_result)
             raise FormValidationError(content)
-
-
-# --- HTMX Helpers ---
-
-
-def is_htmx(request: Request) -> bool:
-    """Check if request is from HTMX."""
-    return request.headers.get("HX-Request") == "true"
-
-
-def htmx_target(request: Request) -> str | None:
-    """Get HTMX target element ID."""
-    return request.headers.get("HX-Target")
-
-
-def htmx_trigger(request: Request) -> str | None:
-    """Get HTMX trigger element ID."""
-    return request.headers.get("HX-Trigger")
-
-
-def htmx_redirect(url: str) -> Response:
-    """Redirect via HTMX HX-Redirect header."""
-    return Response(status_code=200, headers={"HX-Redirect": url})
-
-
-def htmx_refresh() -> Response:
-    """Trigger full page refresh via HTMX."""
-    return Response(status_code=200, headers={"HX-Refresh": "true"})
-
-
-def htmx_retarget(content: SafeHTML, target: str) -> Response:
-    """Return content with retargeted swap."""
-    return Response(content=content.content, headers={"HX-Retarget": target})
-
-
-def htmx_trigger_event(
-    content: SafeHTML,
-    event: str,
-    *,
-    after: str = "settle",
-) -> Response:
-    """Return content and trigger a client-side event."""
-    header = (
-        f"HX-Trigger-After-{after.capitalize()}" if after != "receive" else "HX-Trigger"
-    )
-    return Response(content=content.content, headers={header: event})

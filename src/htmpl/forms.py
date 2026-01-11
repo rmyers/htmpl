@@ -44,6 +44,7 @@ from .elements import (
 Choices = list[list[str | int | bool | float]]
 Widget = Literal["input", "textarea", "select", "checkbox", "radio", "hidden"]
 T = TypeVar("T", bound=BaseModel)
+F = TypeVar("F", bound="BaseForm")
 
 
 class FieldConfig(BaseModel):
@@ -308,7 +309,7 @@ class BaseForm(BaseModel):
         return small(errors[name], id=f"{name}-error", class_="error")
 
     @classmethod
-    def fields(
+    def form_fields(
         cls,
         *names: str,
         values: dict[str, Any] | None = None,
@@ -330,7 +331,7 @@ class BaseForm(BaseModel):
     ) -> Element:
         """Render fields inline in a grid row."""
         return div(
-            cls.fields(*names, values=values, errors=errors),
+            cls.form_fields(*names, values=values, errors=errors),
             class_="grid",
         )
 
@@ -345,7 +346,7 @@ class BaseForm(BaseModel):
         """Render fields in a fieldset with legend."""
         return fieldset(
             legend(title),
-            *cls.fields(*names, values=values, errors=errors),
+            *cls.form_fields(*names, values=values, errors=errors),
         )
 
     @classmethod

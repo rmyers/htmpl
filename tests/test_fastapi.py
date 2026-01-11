@@ -9,18 +9,12 @@ from pydantic import Field, EmailStr
 
 from htmpl import html, forms, SafeHTML
 from htmpl.elements import section, h1, p, div, article, form, button
+from htmpl.htmx import is_htmx
 from htmpl.fastapi import (
     HTMLRoute,
     HTMLForm,
     FormValidationError,
     form_validation_error_handler,
-    is_htmx,
-    htmx_target,
-    htmx_trigger,
-    htmx_redirect,
-    htmx_refresh,
-    htmx_retarget,
-    htmx_trigger_event,
 )
 
 
@@ -241,92 +235,6 @@ class TestFormRouter:
         assert "Custom Login" in response.text
         assert 'aria-invalid="true"' in response.text
 
-
-class TestHtmxRequestHelpers:
-    @pytest.fixture
-    def app(self):
-        app = FastAPI()
-
-        @app.get("/check-htmx")
-        async def check_htmx(request: Request):
-            return {
-                "is_htmx": is_htmx(request),
-                "target": htmx_target(request),
-                "trigger": htmx_trigger(request),
-            }
-
-        return app
-
-    @pytest.fixture
-    def client(self, app):
-        return TestClient(app)
-
-    def test_not_htmx(self, client):
-        response = client.get("/check-htmx")
-        data = response.json()
-        assert data["is_htmx"] is False
-        assert data["target"] is None
-        assert data["trigger"] is None
-
-    def test_is_htmx(self, client):
-        response = client.get("/check-htmx", headers={"HX-Request": "true"})
-        data = response.json()
-        assert data["is_htmx"] is True
-
-    def test_htmx_target(self, client):
-        response = client.get(
-            "/check-htmx",
-            headers={
-                "HX-Request": "true",
-                "HX-Target": "#my-div",
-            },
-        )
-        data = response.json()
-        assert data["target"] == "#my-div"
-
-    def test_htmx_trigger(self, client):
-        response = client.get(
-            "/check-htmx",
-            headers={
-                "HX-Request": "true",
-                "HX-Trigger": "my-button",
-            },
-        )
-        data = response.json()
-        assert data["trigger"] == "my-button"
-
-
-class TestHtmxResponseHelpers:
-    def test_htmx_redirect(self):
-        response = htmx_redirect("/new-location")
-        assert response.status_code == 200
-        assert response.headers["HX-Redirect"] == "/new-location"
-
-    def test_htmx_refresh(self):
-        response = htmx_refresh()
-        assert response.status_code == 200
-        assert response.headers["HX-Refresh"] == "true"
-
-    def test_htmx_retarget(self):
-        content = SafeHTML("<p>content</p>")
-        response = htmx_retarget(content, "#other-target")
-        assert response.body == b"<p>content</p>"
-        assert response.headers["HX-Retarget"] == "#other-target"
-
-    def test_htmx_trigger_event_default(self):
-        content = SafeHTML("<p>done</p>")
-        response = htmx_trigger_event(content, "myEvent")
-        assert response.headers["HX-Trigger-After-Settle"] == "myEvent"
-
-    def test_htmx_trigger_event_after_swap(self):
-        content = SafeHTML("")
-        response = htmx_trigger_event(content, "myEvent", after="swap")
-        assert response.headers["HX-Trigger-After-Swap"] == "myEvent"
-
-    def test_htmx_trigger_event_receive(self):
-        content = SafeHTML("")
-        response = htmx_trigger_event(content, "myEvent", after="receive")
-        assert response.headers["HX-Trigger"] == "myEvent"
 
 
 class TestIntegration:

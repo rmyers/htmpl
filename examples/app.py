@@ -4,6 +4,7 @@ Example Julython-style app using htmpl with Elements.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,6 +151,7 @@ def LeaderboardTable(users: list[User]):
     return table(
         thead(tr(th("#"), th("User"), th("Commits"), th("Points"))),
         tbody([LeaderboardRow(u, i + 1) for i, u in enumerate(users)], id="leaderboard-body"),
+        id="leaderboard"
     )
 
 
@@ -286,11 +288,12 @@ async def leaderboard(request: Request, q: str = ""):
 
     # HTMX partial - just the rows
     if is_htmx(request):
-        return fragment(*[LeaderboardRow(u, i + 1) for i, u in enumerate(users)])
+        logger.info('Just swap the table')
+        return fragment(LeaderboardTable(users))
 
     return fragment(
         h1("Leaderboard"),
-        SearchInput("q", src="/board", target="#leaderboard-body", placeholder="Search users..."),
+        SearchInput("q", src="/board", target="#leaderboard", placeholder="Search users..."),
         LeaderboardTable(users),
     )
 
@@ -327,6 +330,7 @@ async def dashboard(ctx: CurrentPage):
 # API routes - fragments only, no layout
 @router.get("/api/commits/recent")
 async def recent_commits():
+    await asyncio.sleep(3)
     user = await get_current_user()
     commits = await get_recent_commits(user.id) if user else []
     return fragment(*[CommitCard(msg, repo, pts, ts) for msg, repo, pts, ts in commits])
@@ -340,6 +344,7 @@ class SettingsForm(BaseForm):
     email: EmailStr
     email_digest: bool = Field(default=False, json_schema_extra={"form_widget": "checkbox", "role": "switch"})
     notify_mentions: bool = Field(default=True, json_schema_extra={"form_widget": "checkbox"})
+    color: str | None = None
 
 
 async def settings_page(renderer: type[SettingsForm], values: dict, errors: dict):
@@ -352,11 +357,11 @@ async def settings_page(renderer: type[SettingsForm], values: dict, errors: dict
 @router.get("/settings", dependencies=[page("settings", title="Settings", layout=AppPage)])
 async def settings_get():
     user = await get_current_user()
-    values = {"username": user.username, "email": "bob@example.com"} if user else {}
+    values = {"username": user.username} if user else {}
     return await settings_page(SettingsForm, values, {})
 
 
-@router.post("/settings", dependencies=[page("settings", title="Settings", layout=AppPage)])
+@router.post("/settings", dependencies=[page("settings_post", title="Settings", layout=AppPage)])
 async def settings_post(data: SettingsForm = Depends(HTMLForm(SettingsForm, settings_page))):
     return fragment(
         h1("Settings"),
@@ -374,7 +379,7 @@ app.mount("/static", StaticFiles(directory=Path("static"), check_dir=False), nam
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
-logger.info(f"{pprint(registry.pages)}")
+# logger.info(f"{pprint(registry.pages)}")
 save_manifest()
 
 if __name__ == "__main__":

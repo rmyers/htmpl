@@ -30,6 +30,7 @@ dev = [
   "httpx>=0.28",
   "pytest>=8.0",
   "pytest-asyncio>=0.24",
+  "pytest-cov",
   "ruff>=0.8",
   "mypy>=1.13",
 ]
@@ -63,6 +64,18 @@ warn_unused_ignores = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = [
+  # "--test-alembic",
+  "--log-cli-level=warning",
+  # "--junitxml=junit/test-results.xml",
+  "--cov=htmpl",
+  "--cov-branch",
+  "--cov-report=term-missing:skip-covered",
+  "--cov-report=html",
+  "--strict-markers",
+  "--strict-config",
+  "--verbose",
+]
 
 [tool.conda-lock]
 channels = ["conda-forge", "defaults"]

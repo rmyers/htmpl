@@ -110,7 +110,7 @@ wheels = [
 
 [[package]]
 name = "htmpl"
-version = "0.1.1"
+version = "0.3.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -129,6 +129,11 @@ dev = [
     { name = "uvicorn" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.115" },
@@ -144,6 +149,9 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.32" },
 ]
 provides-extras = ["all", "dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "mypy", specifier = ">=1.19.1" }]
 
 [[package]]
 name = "httpcore"

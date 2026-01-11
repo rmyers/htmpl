@@ -7,6 +7,8 @@ from __future__ import annotations
 from typing import Literal
 from dataclasses import dataclass, field
 
+from fastapi import Request, Response
+
 from .core import html, SafeHTML, cached
 
 
@@ -217,3 +219,46 @@ async def SearchInput(
 async def OobSwap(id: str, children: SafeHTML, *, swap: Swap = "innerHTML") -> SafeHTML:
     """Out-of-band swap container."""
     return await html(t'<div id="{id}" hx-swap-oob="{swap}">{children}</div>')
+
+
+def is_htmx(request: Request) -> bool:
+    """Check if request is from HTMX."""
+    return request.headers.get("HX-Request") == "true"
+
+
+def htmx_target(request: Request) -> str | None:
+    """Get HTMX target element ID."""
+    return request.headers.get("HX-Target")
+
+
+def htmx_trigger(request: Request) -> str | None:
+    """Get HTMX trigger element ID."""
+    return request.headers.get("HX-Trigger")
+
+
+def htmx_redirect(url: str) -> Response:
+    """Redirect via HTMX HX-Redirect header."""
+    return Response(status_code=200, headers={"HX-Redirect": url})
+
+
+def htmx_refresh() -> Response:
+    """Trigger full page refresh via HTMX."""
+    return Response(status_code=200, headers={"HX-Refresh": "true"})
+
+
+def htmx_retarget(content: SafeHTML, target: str) -> Response:
+    """Return content with retargeted swap."""
+    return Response(content=content.content, headers={"HX-Retarget": target})
+
+
+def htmx_trigger_event(
+    content: SafeHTML,
+    event: str,
+    *,
+    after: str = "settle",
+) -> Response:
+    """Return content and trigger a client-side event."""
+    header = (
+        f"HX-Trigger-After-{after.capitalize()}" if after != "receive" else "HX-Trigger"
+    )
+    return Response(content=content.content, headers={header: event})

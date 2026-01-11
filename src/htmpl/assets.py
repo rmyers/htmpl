@@ -22,6 +22,10 @@ ESBUILD = shutil.which("esbuild")
 logger = logging.getLogger(__name__)
 
 
+class AlreadyRegistered(Exception):
+    pass
+
+
 @runtime_checkable
 class ComponentFunc(Protocol):
     """Protocol for decorated component functions."""
@@ -145,13 +149,19 @@ class Registry:
         return self._pages.copy()
 
     def add_component(self, comp: Component) -> None:
+        if comp.name in self._components:
+            raise AlreadyRegistered(f"Duplicate component found {comp.name}")
         self._components[comp.name] = comp
 
     def add_layout(self, comp: Component) -> None:
+        if comp.name in self._layouts:
+            raise AlreadyRegistered(f"Duplicate layout found {comp.name}")
         self._components[comp.name] = comp
         self._layouts[comp.name] = comp
 
     def add_page(self, page: Page) -> None:
+        if page.name in self._pages:
+            raise AlreadyRegistered(f"Duplicate page found {page.name} - {page.title}")
         self._pages[page.name] = page
 
     def get_component(self, name: str) -> Component | None:

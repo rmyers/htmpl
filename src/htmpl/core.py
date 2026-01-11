@@ -175,7 +175,7 @@ def cached(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
             cache[key] = await func(*args, **kwargs)
         return cache[key]
 
-    wrapper.cache_clear = lambda: cache.clear()
+    setattr(wrapper, "cache_clear", lambda: cache.clear())
     return wrapper
 
 
@@ -209,8 +209,8 @@ def cached_lru(maxsize: int = 128):
 
             return result
 
-        wrapper.cache_clear = lambda: cache.clear()
-        wrapper.cache_info = lambda: {"size": len(cache), "maxsize": maxsize}
+        setattr(wrapper, "cache_clear", lambda: cache.clear())
+        setattr(wrapper, "cache_info", lambda: {"size": len(cache), "maxsize": maxsize})
         return wrapper
 
     return decorator
@@ -245,7 +245,7 @@ def cached_ttl(seconds: int = 300):
             cache[key] = (now + seconds, result)
             return result
 
-        wrapper.cache_clear = lambda: cache.clear()
+        setattr(wrapper, "cache_clear", lambda: cache.clear())
         return wrapper
 
     return decorator
