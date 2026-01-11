@@ -1,8 +1,7 @@
-"""Component and Layout dependency injection with automatic asset registration."""
+"""FastAPI integration with component DI and automatic asset registration."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import inspect
 from functools import wraps
 from inspect import isawaitable
@@ -13,92 +12,26 @@ from typing import (
     Awaitable,
     Callable,
     Generic,
-    Protocol,
-    TypeAlias,
     TypeVar,
 )
 
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.routing import APIRoute
-
-from htmpl.core import SafeHTML, html
-from htmpl.forms import BaseForm, parse_form_errors
 from pydantic import ValidationError
 
-
-from .assets import _components, Component, ComponentFunc, create_bundle, Bundles
+from .assets import (
+    _pages,
+    AssetCollector,
+    ComponentFunc,
+    Page,
+    PageContext,
+)
 from .core import SafeHTML, html
-
-# --- Types ---
-
-
-class LayoutRenderer(Protocol):
-    """Protocol for layout render functions."""
-
-    def __call__(
-        self, content: SafeHTML, title: str, bundles: Bundles
-    ) -> Awaitable[SafeHTML]: ...
+from .forms import BaseForm, parse_form_errors
 
 
-LayoutFunc: TypeAlias = Callable[[SafeHTML, str, Bundles], Awaitable[SafeHTML]]
-
-
-# --- Asset Collection ---
-
-
-@dataclass
-class AssetCollector:
-    """Collects assets from rendered components during a request."""
-
-    css: set[str] = field(default_factory=set)
-    js: set[str] = field(default_factory=set)
-    py: set[str] = field(default_factory=set)
-    _seen: set[str] = field(default_factory=set)
-
-    def add(self, comp_name: str) -> None:
-        """Register a component's assets. Idempotent."""
-        if comp_name in self._seen:
-            return
-        self._seen.add(comp_name)
-
-        comp = _components.get(comp_name)
-        if comp:
-            self.css |= comp.css
-            self.js |= comp.js
-            self.py |= comp.py
-
-    def bundles(self) -> Bundles:
-        """Generate bundles from collected assets."""
-        return Bundles(
-            css=create_bundle(self.css, "css"),
-            js=create_bundle(self.js, "js"),
-            py=create_bundle(self.py, "py"),
-        )
-
-
-@dataclass
-class PageContext:
-    """Runtime page context with asset collection and layout."""
-
-    name: str
-    title: str
-    layout: LayoutFunc | None = None
-    assets: AssetCollector = field(default_factory=AssetCollector)
-    _bundles: Bundles | None = field(default=None, repr=False)
-
-    @property
-    def bundles(self) -> Bundles:
-        """Lazily generate bundles from collected assets."""
-        if self._bundles is None:
-            self._bundles = self.assets.bundles()
-        return self._bundles
-
-    async def render(self, content: SafeHTML) -> SafeHTML:
-        """Render content through the page's layout."""
-        if self.layout is None:
-            return content
-        return await self.layout(content, self.title, self.bundles)
+# --- Request State Helpers ---
 
 
 def get_asset_collector(request: Request) -> AssetCollector:
@@ -115,124 +48,6 @@ def get_page_context(request: Request) -> PageContext | None:
 
 Assets = Annotated[AssetCollector, Depends(get_asset_collector)]
 CurrentPage = Annotated[PageContext | None, Depends(get_page_context)]
-
-
-# --- Layout Decorator ---
-
-
-_layouts: dict[str, Component] = {}
-
-
-def layout(
-    name: str | None = None,
-    *,
-    css: set[str] | None = None,
-    js: set[str] | None = None,
-    py: set[str] | None = None,
-):
-    """
-    Register a layout with its assets.
-
-    Layouts are components that return a renderer function. The renderer
-    receives content, title, and bundles, and returns the full page HTML.
-
-    Usage:
-        @layout(css={"/static/app.css"})
-        async def AppLayout(
-            nav: Annotated[SafeHTML, use_component(NavBar)],
-            footer: Annotated[SafeHTML, use_component(Footer)],
-        ):
-            async def render(content: SafeHTML, title: str, bundles: Bundles) -> SafeHTML:
-                return await html(t'''<!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="utf-8">
-                    <title>{title}</title>
-                    {raw(bundles.head())}
-                </head>
-                <body>
-                    {nav}
-                    <main>{content}</main>
-                    {footer}
-                </body>
-                </html>''')
-            return render
-
-        @router.get("/", dependencies=[page("home", title="Home", layout=AppLayout)])
-        async def home():
-            return section(h1("Welcome"))
-    """
-
-    def decorator(fn: Callable) -> Callable:
-        layout_name = name or fn.__name__
-
-        _components[layout_name] = Component(
-            name=layout_name,
-            css=css or set(),
-            js=js or set(),
-            py=py or set(),
-        )
-        _layouts[layout_name] = _components[layout_name]
-
-        fn._htmpl_layout = layout_name
-        return fn
-
-    return decorator
-
-
-# --- use_layout Dependency ---
-
-
-def use_layout(layout_component: Callable) -> Any:
-    """
-    FastAPI dependency that resolves a layout's dependencies and returns the renderer.
-
-    This is used internally by page() when a layout component is provided.
-    """
-    if not hasattr(layout_component, "_htmpl_layout"):
-        raise TypeError(
-            f"'{getattr(layout_component, '__name__', layout_component)}' is not a registered layout. "
-            f"Add the @layout decorator to register it."
-        )
-
-    layout_name = layout_component._htmpl_layout
-    sig = inspect.signature(layout_component)
-
-    # Build params, injecting Request if needed
-    params = list(sig.parameters.values())
-    has_request = "request" in sig.parameters
-
-    if not has_request:
-        params.insert(
-            0,
-            inspect.Parameter(
-                "_htmpl_request",
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                annotation=Request,
-            ),
-        )
-
-    async def resolve(**kwargs) -> LayoutFunc:
-        request = kwargs.pop("_htmpl_request", None)
-        if request is None:
-            for v in kwargs.values():
-                if isinstance(v, Request):
-                    request = v
-                    break
-
-        # Register layout's own assets
-        if request is not None:
-            collector = get_asset_collector(request)
-            collector.add(layout_name)
-
-        # Call layout to get renderer
-        renderer = await layout_component(**kwargs)
-        return renderer
-
-    resolve.__signature__ = sig.replace(parameters=params)  # type: ignore
-    resolve.__name__ = f"use_{layout_name}"
-
-    return Depends(resolve)
 
 
 # --- Page Dependency ---
@@ -258,12 +73,20 @@ def page(
         async def home():
             return section(h1("Welcome"))
     """
+    # Register page at import time for pre-building
+    layout_name = getattr(layout, "_htmpl_layout", None) if layout else None
+    _pages[name] = Page(
+        name=name,
+        title=title,
+        layout=layout_name,
+    )
+
     if layout is not None and hasattr(layout, "_htmpl_layout"):
         # Layout is a component - merge its signature into setup
         layout_name = layout._htmpl_layout
         layout_sig = inspect.signature(layout, eval_str=True)
 
-        # Build params: Request first, then layout's params (forced to POSITIONAL_OR_KEYWORD)
+        # Build params: Request first, then layout's params
         params = [
             inspect.Parameter(
                 "request",
@@ -272,9 +95,7 @@ def page(
             )
         ]
 
-        layout_param_names = []
         for pname, p in layout_sig.parameters.items():
-            layout_param_names.append(pname)
             params.append(
                 inspect.Parameter(
                     pname,
@@ -345,7 +166,7 @@ def use_component(
         )
 
     comp_name = component._htmpl_component
-    sig = inspect.signature(component)
+    sig = inspect.signature(component, eval_str=True)
 
     params = []
     has_request = False
@@ -355,7 +176,14 @@ def use_component(
             continue
         if p.annotation is Request:
             has_request = True
-        params.append(p)
+        params.append(
+            inspect.Parameter(
+                pname,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=p.default,
+                annotation=p.annotation,
+            )
+        )
 
     if not has_request:
         params.insert(
@@ -381,7 +209,7 @@ def use_component(
 
         return await component(**fixed_kwargs, **kwargs)
 
-    render.__signature__ = sig.replace(parameters=params)  # type: ignore
+    render.__signature__ = inspect.Signature(parameters=params)  # type: ignore
     render.__name__ = f"use_{comp_name}"
 
     return Depends(render)
@@ -465,12 +293,17 @@ async def render_html(result: Any) -> SafeHTML | None:
     return None
 
 
+# --- Form Handling ---
+
+
 class FormValidationError(HTTPException):
     """Raised when form validation fails - contains the rendered HTML response."""
 
     def __init__(self, content: SafeHTML | None):
         super().__init__(status_code=200, detail="Form validation failed")
-        self.response = HTMLResponse(content=content, status_code=200)
+        self.response = HTMLResponse(
+            content=content.content if content else "", status_code=200
+        )
 
 
 async def form_validation_error_handler(request: Request, exc: FormValidationError):
@@ -506,7 +339,7 @@ class HTMLForm(Generic[T]):
     def __init__(
         self,
         model: type[T],
-        template: Callable[[type[T], dict, dict], Awaitable[SafeHTML]],
+        template: Callable[[type[T], dict, dict], Awaitable[Any]],
     ):
         self.model = model
         self.template = template
@@ -525,12 +358,12 @@ class HTMLForm(Generic[T]):
             return self.model(**values)
         except ValidationError as e:
             errors = parse_form_errors(e)
-
-            # Render the template with errors
             html_result = await self.template(self.model, values, errors)
             content = await render_html(html_result)
-
             raise FormValidationError(content)
+
+
+# --- HTMX Helpers ---
 
 
 def is_htmx(request: Request) -> bool:
@@ -550,26 +383,17 @@ def htmx_trigger(request: Request) -> str | None:
 
 def htmx_redirect(url: str) -> Response:
     """Redirect via HTMX HX-Redirect header."""
-    return Response(
-        status_code=200,
-        headers={"HX-Redirect": url},
-    )
+    return Response(status_code=200, headers={"HX-Redirect": url})
 
 
 def htmx_refresh() -> Response:
     """Trigger full page refresh via HTMX."""
-    return Response(
-        status_code=200,
-        headers={"HX-Refresh": "true"},
-    )
+    return Response(status_code=200, headers={"HX-Refresh": "true"})
 
 
 def htmx_retarget(content: SafeHTML, target: str) -> Response:
     """Return content with retargeted swap."""
-    return Response(
-        content=content.content,
-        headers={"HX-Retarget": target},
-    )
+    return Response(content=content.content, headers={"HX-Retarget": target})
 
 
 def htmx_trigger_event(
@@ -582,7 +406,4 @@ def htmx_trigger_event(
     header = (
         f"HX-Trigger-After-{after.capitalize()}" if after != "receive" else "HX-Trigger"
     )
-    return Response(
-        content=content.content,
-        headers={header: event},
-    )
+    return Response(content=content.content, headers={header: event})

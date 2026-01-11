@@ -6,6 +6,7 @@ from typing import Awaitable, Callable, Protocol, TypeAlias, cast, runtime_check
 import hashlib
 import json
 import os
+import time
 import subprocess
 import shutil
 import logging
@@ -29,26 +30,11 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class ComponentFunc(Protocol):
-    """
-    Protocol for decorated component functions.
-
-    Components must be decorated with @component to be used in page(uses={...}).
-    """
+    """Protocol for decorated component functions."""
 
     _htmpl_component: str
 
     def __call__(self, *args, **kwargs) -> Awaitable[SafeHTML]: ...
-
-
-class LayoutRenderer(Protocol):
-    """Protocol for layout render functions."""
-
-    def __call__(
-        self, content: SafeHTML, title: str, bundles: "Bundles"
-    ) -> Awaitable[SafeHTML]: ...
-
-
-LayoutFunc: TypeAlias = Callable[[SafeHTML, str, "Bundles"], Awaitable[SafeHTML]]
 
 
 # --- Data Classes ---
@@ -76,6 +62,49 @@ class Page:
     py: set[str] = field(default_factory=set)
     imports: set[str] = field(default_factory=set)
     layout: str | None = None
+
+
+@dataclass
+class Bundles:
+    """Bundle URLs for a page."""
+
+    css: str | None = None
+    js: str | None = None
+    py: str | None = None
+
+    def head(self) -> str:
+        """Generate HTML tags for document head."""
+        parts = []
+        if self.css:
+            parts.append(f'<link rel="stylesheet" href="{self.css}">')
+        if self.js:
+            parts.append(f'<script src="{self.js}" defer></script>')
+        if self.py:
+            parts.append(
+                '<script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>'
+            )
+            parts.append(f'<script type="py" src="{self.py}" async></script>')
+        return "\n    ".join(parts)
+
+    def to_dict(self) -> dict:
+        return {"css": self.css, "js": self.js, "py": self.py}
+
+
+# --- Types ---
+
+
+class LayoutRenderer(Protocol):
+    """Protocol for layout render functions."""
+
+    def __call__(
+        self, content: SafeHTML, title: str, bundles: Bundles
+    ) -> Awaitable[SafeHTML]: ...
+
+
+LayoutFunc: TypeAlias = Callable[[SafeHTML, str, Bundles], Awaitable[SafeHTML]]
+
+
+# --- Asset Collection ---
 
 
 @dataclass
@@ -323,42 +352,13 @@ def _hash(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:12]
 
 
-@dataclass
-class Bundles:
-    """Bundle URLs for a page."""
-
-    css: str | None = None
-    js: str | None = None
-    py: str | None = None
-
-    def head(self) -> str:
-        """Generate HTML tags for document head."""
-        parts = []
-        if self.css:
-            parts.append(f'<link rel="stylesheet" href="{self.css}">')
-        if self.js:
-            parts.append(f'<script src="{self.js}" defer></script>')
-        if self.py:
-            parts.append(
-                '<script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>'
-            )
-            parts.append(f'<script type="py" src="{self.py}" async></script>')
-        return "\n    ".join(parts)
-
-    def to_dict(self) -> dict:
-        return {"css": self.css, "js": self.js, "py": self.py}
-
-
 def _bundle_with_esbuild(files: list[Path], outfile: Path, ext: str) -> bool:
     """Bundle files using esbuild. Returns True on success."""
-
+    entry = outfile.with_suffix(f".entry.{ext}")
     try:
-        # Create a temp entry file that imports all sources
-        entry = outfile.with_suffix(f".entry.{ext}")
-
         if ext == "css":
             imports = "\n".join(f'@import "{f.resolve()}";' for f in files)
-        else:  # js
+        else:
             imports = "\n".join(f'import "{f.resolve()}";' for f in files)
 
         entry.write_text(imports)
@@ -396,14 +396,12 @@ def create_bundle(files: set[str], ext: str) -> str | None:
 
     prefix = {"css": "styles", "js": "scripts", "py": "pyscripts"}[ext]
 
-    # Resolve local file paths
     local_files: list[Path] = []
     file_names: list[str] = []
     for f in sorted(files):
         p = Path(f.lstrip("/"))
         if p.exists():
             local_files.append(p)
-            # store the name and modify time to generate hash
             file_names.append(f"{p.name}-{p.stat().st_mtime}")
 
     if not local_files:
@@ -412,20 +410,22 @@ def create_bundle(files: set[str], ext: str) -> str | None:
     file_hash = _hash(":".join(file_names))
     filename = f"{prefix}-{file_hash}.{ext}"
     path = BUNDLE_DIR / filename
-    # TODO(rmyers): this needs to be configurable
     final_path = f"/static/bundles/{filename}"
 
     if path.exists():
         return final_path
 
-    # Try esbuild for CSS/JS
+    logger.info(f"building: {filename} from: {file_names}")
+    start_time = time.perf_counter()
     if ext in ("css", "js") and ESBUILD:
-        logger.info("building...")
-
         if _bundle_with_esbuild(local_files, path, ext):
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            logger.info(f"built {filename} with esbuild in {elapsed_ms:.1f}ms")
             return final_path
 
     _fallback_bundle(local_files, path)
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    logger.info(f"built {filename} with fallback bundler in {elapsed_ms:.1f}ms")
     return final_path
 
 
@@ -438,7 +438,6 @@ def _fallback_bundle(files: list[Path], outfile: Path) -> None:
 def bundle_page(page_name: str) -> Bundles:
     """Create all bundles for a page."""
     assets = resolve_page(page_name)
-
     return Bundles(
         css=create_bundle(assets.css, "css"),
         js=create_bundle(assets.js, "js"),
@@ -452,12 +451,10 @@ def bundle_page(page_name: str) -> Bundles:
 def save_manifest() -> None:
     """Save all page bundles to manifest."""
     BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
-
     data = {"pages": {}}
     for name in _pages:
         bundles = bundle_page(name)
         data["pages"][name] = bundles.to_dict()
-
     (BUNDLE_DIR / "manifest.json").write_text(json.dumps(data, indent=2))
 
 

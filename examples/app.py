@@ -56,7 +56,6 @@ from htmpl.fastapi import (
     page,
     CurrentPage,
     use_component,
-    layout
 )
 
 
