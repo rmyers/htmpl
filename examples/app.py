@@ -50,18 +50,17 @@ from htmpl.elements import (
 )
 from htmpl.forms import BaseForm
 from htmpl.fastapi import (
-    HTMLRoute,
     HTMLForm,
     FormValidationError,
     form_validation_error_handler,
-    is_htmx,
     page,
-    CurrentPage,
     use_component,
+    PageRenderer,
 )
+from htmpl.htmx import is_htmx
 
 
-router = APIRouter(route_class=HTMLRoute)
+router = APIRouter()
 
 
 # Models
@@ -197,7 +196,8 @@ def SearchInput(name: str, *, src: str, target: str, placeholder: str = "Search.
     )
 
 
-def LazyLoad(src: str, *, placeholder=None):
+@component(css={"/static/css/foo.css"})
+async def LazyLoad(src: str, *, placeholder=None):
     """Sync lazy load container."""
     inner = placeholder or article("Loading...", aria_busy="true")
     return div(inner, hx_get=src, hx_trigger="load", hx_swap="outerHTML")
@@ -258,12 +258,12 @@ async def AppPage(navbar: Annotated[SafeHTML, use_component(AppNav)]):
 # Routes
 
 
-@router.get("/", dependencies=[page("home", title="Julython", layout=AppPage)])
-async def home():
+@router.get("/")
+async def home(page_render: Annotated[PageRenderer, page("home", title="Julython", layout=AppPage)]):
     stats = await get_stats()
     leaderboard = await get_leaderboard()
 
-    return fragment(
+    return await page_render.render(fragment(
         section(
             HGroup("Julython", "A month-long celebration of coding in July"),
             Grid(
@@ -279,34 +279,37 @@ async def home():
             ButtonLink("View Full Leaderboard", "/board", variant="secondary"),
             class_="mt-1",
         ),
-    )
+    ))
 
 
-@router.get("/board", dependencies=[page("board", title="Leaderboard", layout=AppPage)])
-async def leaderboard(request: Request, q: str = ""):
+@router.get("/board")
+async def leaderboard(
+    p: Annotated[PageRenderer, page("board", title="Leaderboard", layout=AppPage, uses={LazyLoad})],
+    lazy: Annotated[SafeHTML, use_component(LazyLoad, src="/lskj")],
+    request: Request, q: str = ""):
     users = await get_leaderboard(q)
 
     # HTMX partial - just the rows
     if is_htmx(request):
         logger.info('Just swap the table')
-        return fragment(LeaderboardTable(users))
+        return await p.render(fragment(LeaderboardTable(users)))
 
-    return fragment(
+    return await p.render(fragment(
         h1("Leaderboard"),
         SearchInput("q", src="/board", target="#leaderboard", placeholder="Search users..."),
         LeaderboardTable(users),
-    )
+    ))
 
 
 @router.get("/dashboard", dependencies=[page("dashboard", title="Dashboard", layout=AppPage)])
-async def dashboard(ctx: CurrentPage):
+async def dashboard(p: Annotated[PageRenderer, page("dashboard", title="Dashboard", layout=AppPage)]):
     user = await get_current_user()
     if not user:
-        return await html(t'<meta http-equiv="refresh" content="0;url=/login">')
+        return await p.render(html(t'<meta http-equiv="refresh" content="0;url=/login">'))
 
     repos = await get_user_repos(user.id)
 
-    return fragment(
+    return await p.render(fragment(
         h1(f"Welcome back, {user.username}"),
         Grid(
             StatCard("Your Points", user.points),
@@ -324,16 +327,16 @@ async def dashboard(ctx: CurrentPage):
             RepoTable(repos),
             class_="mt-1",
         ),
-    )
+    ))
 
 
 # API routes - fragments only, no layout
 @router.get("/api/commits/recent")
-async def recent_commits():
+async def recent_commits(p: Annotated[PageRenderer, page("recent_commits")]):
     await asyncio.sleep(3)
     user = await get_current_user()
     commits = await get_recent_commits(user.id) if user else []
-    return fragment(*[CommitCard(msg, repo, pts, ts) for msg, repo, pts, ts in commits])
+    return p.render(fragment(*[CommitCard(msg, repo, pts, ts) for msg, repo, pts, ts in commits]))
 
 
 # Forms
@@ -354,19 +357,22 @@ async def settings_page(renderer: type[SettingsForm], values: dict, errors: dict
     )
 
 
-@router.get("/settings", dependencies=[page("settings", title="Settings", layout=AppPage)])
-async def settings_get():
+@router.get("/settings")
+async def settings_get(p: Annotated[PageRenderer, page("settings", title="Settings", layout=AppPage)]):
     user = await get_current_user()
     values = {"username": user.username} if user else {}
-    return await settings_page(SettingsForm, values, {})
+    return await p.render(settings_page(SettingsForm, values, {}))
 
 
-@router.post("/settings", dependencies=[page("settings_post", title="Settings", layout=AppPage)])
-async def settings_post(data: SettingsForm = Depends(HTMLForm(SettingsForm, settings_page))):
-    return fragment(
+@router.post("/settings")
+async def settings_post(
+    data: Annotated[SettingsForm, Depends(HTMLForm(SettingsForm, settings_page))],
+    pr: Annotated[PageRenderer, page("settings_post", title="Settings", layout=AppPage)]
+):
+    return await pr.render(fragment(
         h1("Settings"),
         article(p("Settings saved successfully!")),
-    )
+    ))
 
 
 # App setup
@@ -379,7 +385,7 @@ app.mount("/static", StaticFiles(directory=Path("static"), check_dir=False), nam
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
-# logger.info(f"{pprint(registry.pages)}")
+logger.info(f"{pprint(registry.pages)}")
 save_manifest()
 
 if __name__ == "__main__":

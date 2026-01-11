@@ -58,9 +58,7 @@ class Element:
         return f"<{self.tag}{space}{attr_str}>{inner}</{self.tag}>"
 
     def __repr__(self) -> str:
-        return (
-            f"Element({self.tag!r}, children={len(self.children)}, attrs={list(self.attrs.keys())})"
-        )
+        return f"Element({self.tag!r}, children={len(self.children)}, attrs={list(self.attrs.keys())})"
 
 
 async def _render_children(children: tuple[Any, ...]) -> str:

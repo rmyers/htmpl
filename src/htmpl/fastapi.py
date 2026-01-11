@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import inspect
-from functools import wraps
 from inspect import isawaitable
 from string.templatelib import Template
 from typing import (
-    Annotated,
     Any,
     Awaitable,
     Callable,
@@ -15,41 +13,64 @@ from typing import (
     TypeVar,
 )
 
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from fastapi.routing import APIRoute
 from pydantic import ValidationError
 
 from .assets import (
     registry,
-    AssetCollector,
     Bundles,
     ComponentFunc,
     LayoutFunc,
     Page,
-    PageContext,
+    get_bundles,
 )
 from .core import SafeHTML, html
 from .forms import BaseForm, parse_form_errors
 
-
-# --- Request State Helpers ---
-
-
-def get_asset_collector(request: Request) -> AssetCollector:
-    """Get or create the asset collector for this request."""
-    if not hasattr(request.state, "htmpl_assets"):
-        request.state.htmpl_assets = AssetCollector()
-    return request.state.htmpl_assets
+# --- Page Renderer ---
 
 
-def get_page_context(request: Request) -> PageContext | None:
-    """Get page context if set."""
-    return getattr(request.state, "htmpl_page", None)
+class PageRenderer:
+    """
+    Renders page content through a layout with pre-resolved assets.
 
+    Usage:
+        @router.get("/")
+        async def home(page: Annotated[PageRenderer, page("home", layout=AppLayout)]):
+            content = section(h1("Welcome"))
+            return await page.render(content)
+    """
 
-Assets = Annotated[AssetCollector, Depends(get_asset_collector)]
-CurrentPage = Annotated[PageContext | None, Depends(get_page_context)]
+    def __init__(
+        self,
+        name: str,
+        title: str,
+        layout: LayoutFunc | None,
+    ):
+        self.name = name
+        self.title = title
+        self.layout = layout
+        self._bundles: Bundles | None = None
+
+    @property
+    def bundles(self) -> Bundles:
+        """Lazily generate bundles on first access."""
+        if self._bundles is None:
+            self._bundles = get_bundles(self.name)
+        return self._bundles
+
+    async def render(self, content: Any) -> HTMLResponse:
+        """Render content through layout and return HTMLResponse."""
+        rendered = await render_html(content)
+        if rendered is None:
+            rendered = SafeHTML(str(content))
+
+        if self.layout:
+            final = await self.layout(rendered, self.title, self.bundles)
+            return HTMLResponse(final.content)
+
+        return HTMLResponse(rendered.content)
 
 
 # --- Page Dependency ---
@@ -60,36 +81,37 @@ def page(
     *,
     title: str = "Page",
     layout: Callable | None = None,
+    uses: set[ComponentFunc] | None = None,
 ):
     """
-    Page dependency - sets up context with optional layout.
+    Page dependency that returns a PageRenderer.
+
+    Assets are resolved statically via the layout's `uses={}` dependencies.
 
     Usage:
-        # No layout - just asset collection
-        @router.get("/fragment", dependencies=[page("frag")])
-        async def fragment():
-            return div("Hello")
-
-        # With layout component
-        @router.get("/", dependencies=[page("home", title="Home", layout=AppLayout)])
-        async def home():
-            return section(h1("Welcome"))
+        @router.get("/")
+        async def home(page: Annotated[PageRenderer, page("home", layout=AppLayout)]):
+            return await page.render(section(h1("Welcome")))
     """
+    # Register dependencies
+    imports: set[str] = set()
+    for comp in uses or set():
+        if not callable(comp):
+            raise TypeError(f"Expected a component function, got {type(comp).__name__}")
+        dep_name = getattr(comp, "_htmpl_component", None)
+        if dep_name is None:
+            raise TypeError(
+                f"'{type(comp).__name__}' is not a registered component. "
+                f"Add the @component decorator to register it."
+            )
+        imports.add(dep_name)
     # Register page at import time for pre-building
     layout_name = getattr(layout, "_htmpl_layout", None) if layout else None
-    registry.add_page(
-        Page(
-            name=name,
-            title=title,
-            layout=layout_name,
-        )
-    )
+    registry.add_page(Page(name=name, title=title, layout=layout_name, imports=imports))
 
-    if layout is not None and layout_name:
-        # Layout is a component - merge its signature into setup
+    if layout is not None and hasattr(layout, "_htmpl_layout"):
         layout_sig = inspect.signature(layout, eval_str=True)
 
-        # Build params: Request first, then layout's params
         params = [
             inspect.Parameter(
                 "request",
@@ -108,37 +130,25 @@ def page(
                 )
             )
 
-        async def setup(request: Request, **kwargs) -> PageContext:
-            collector = get_asset_collector(request)
-            collector.add(layout_name)
-
-            # Call layout to get renderer
+        async def setup(request: Request, **kwargs) -> PageRenderer:
             resolved_layout = await layout(**kwargs)
-
-            ctx = PageContext(
+            return PageRenderer(
                 name=name,
                 title=title,
                 layout=resolved_layout,
-                assets=collector,
             )
-            request.state.htmpl_page = ctx
-            return ctx
 
         setup.__signature__ = inspect.Signature(parameters=params)  # type: ignore
         return Depends(setup)
 
     else:
-        # No layout or plain function layout
-        def setup_simple(request: Request) -> PageContext:
-            collector = get_asset_collector(request)
-            ctx = PageContext(
+
+        def setup_simple(request: Request) -> PageRenderer:
+            return PageRenderer(
                 name=name,
                 title=title,
                 layout=layout,
-                assets=collector,
             )
-            request.state.htmpl_page = ctx
-            return ctx
 
         return Depends(setup_simple)
 
@@ -151,16 +161,19 @@ def use_component(
     **fixed_kwargs: Any,
 ) -> Any:
     """
-    FastAPI dependency that renders a component and registers its assets.
+    FastAPI dependency that renders a component.
+
+    Components register their assets at decoration time.
+    The page's bundle is resolved statically from the dependency tree.
 
     Usage:
         @component(css={"/static/navbar.css"})
         async def NavBar(user: Annotated[User, Depends(get_user)]):
             return await html(t'<nav>Welcome {user.name}</nav>')
 
-        @router.get("/", dependencies=[page("home", layout=AppLayout)])
-        async def home(navbar: Annotated[SafeHTML, use_component(NavBar)]):
-            return section(navbar, h1("Welcome"))
+        @layout()
+        async def AppLayout(nav: Annotated[SafeHTML, use_component(NavBar)]):
+            ...
     """
     if not hasattr(component, "_htmpl_component"):
         raise TypeError(
@@ -172,13 +185,9 @@ def use_component(
     sig = inspect.signature(component, eval_str=True)
 
     params = []
-    has_request = False
-
     for pname, p in sig.parameters.items():
         if pname in fixed_kwargs:
             continue
-        if p.annotation is Request:
-            has_request = True
         params.append(
             inspect.Parameter(
                 pname,
@@ -188,92 +197,13 @@ def use_component(
             )
         )
 
-    if not has_request:
-        params.insert(
-            0,
-            inspect.Parameter(
-                "_htmpl_request",
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                annotation=Request,
-            ),
-        )
-
     async def render(**kwargs) -> SafeHTML | None:
-        request = kwargs.pop("_htmpl_request", None)
-        if request is None:
-            for v in kwargs.values():
-                if isinstance(v, Request):
-                    request = v
-                    break
-
-        if request is not None:
-            collector = get_asset_collector(request)
-            collector.add(comp_name)
-
         return await component(**fixed_kwargs, **kwargs)
 
     render.__signature__ = inspect.Signature(parameters=params)  # type: ignore
     render.__name__ = f"use_{comp_name}"
 
     return Depends(render)
-
-
-# --- HTML Route ---
-
-
-class HTMLRoute(APIRoute):
-    """
-    Route that auto-converts Element/SafeHTML to HTMLResponse.
-
-    Usage:
-        router = APIRouter(route_class=HTMLRoute)
-    """
-
-    def __init__(self, path: str, endpoint: Callable[..., Any], **kwargs):
-        sig = inspect.signature(endpoint)
-        needs_request = "request" not in sig.parameters
-
-        @wraps(endpoint)
-        async def html_endpoint(request: Request, **kw):
-            if needs_request:
-                result = endpoint(**kw)
-            else:
-                result = endpoint(request=request, **kw)
-
-            if isawaitable(result):
-                result = await result
-
-            if hasattr(result, "status_code"):
-                return result
-
-            content = await render_html(result)
-            if content is None:
-                return result
-
-            ctx = get_page_context(request)
-            if ctx:
-                final = await ctx.render(content)
-                return HTMLResponse(final.content)
-
-            return HTMLResponse(
-                content.content if isinstance(content, SafeHTML) else content
-            )
-
-        params = list(sig.parameters.values())
-
-        if needs_request:
-            params.insert(
-                0,
-                inspect.Parameter(
-                    "request",
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    annotation=Request,
-                ),
-            )
-
-        html_endpoint.__signature__ = sig.replace(parameters=params)  # type: ignore
-
-        super().__init__(path, html_endpoint, **kwargs)
 
 
 # --- Helpers ---
@@ -286,6 +216,10 @@ async def render_html(result: Any) -> SafeHTML | None:
 
     if isinstance(result, Template):
         return await html(result)
+
+    if isawaitable(result):
+        content = await result
+        return await render_html(content)
 
     if hasattr(result, "__html__"):
         content = result.__html__()

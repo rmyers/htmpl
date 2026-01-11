@@ -22,10 +22,6 @@ ESBUILD = shutil.which("esbuild")
 logger = logging.getLogger(__name__)
 
 
-class AlreadyRegistered(Exception):
-    pass
-
-
 @runtime_checkable
 class ComponentFunc(Protocol):
     """Protocol for decorated component functions."""
@@ -149,19 +145,13 @@ class Registry:
         return self._pages.copy()
 
     def add_component(self, comp: Component) -> None:
-        if comp.name in self._components:
-            raise AlreadyRegistered(f"Duplicate component found {comp.name}")
         self._components[comp.name] = comp
 
     def add_layout(self, comp: Component) -> None:
-        if comp.name in self._layouts:
-            raise AlreadyRegistered(f"Duplicate layout found {comp.name}")
         self._components[comp.name] = comp
         self._layouts[comp.name] = comp
 
     def add_page(self, page: Page) -> None:
-        if page.name in self._pages:
-            raise AlreadyRegistered(f"Duplicate page found {page.name} - {page.title}")
         self._pages[page.name] = page
 
     def get_component(self, name: str) -> Component | None:
@@ -183,63 +173,6 @@ class Registry:
 
 # Global singleton instance
 registry = Registry()
-
-
-# --- Asset Collection ---
-
-
-@dataclass
-class AssetCollector:
-    """Collects assets from rendered components during a request."""
-
-    css: set[str] = field(default_factory=set)
-    js: set[str] = field(default_factory=set)
-    py: set[str] = field(default_factory=set)
-    _seen: set[str] = field(default_factory=set)
-
-    def add(self, comp_name: str) -> None:
-        """Register a component's assets. Idempotent."""
-        if comp_name in self._seen:
-            return
-        self._seen.add(comp_name)
-
-        comp = registry.get_component(comp_name)
-        if comp:
-            self.css |= comp.css
-            self.js |= comp.js
-            self.py |= comp.py
-
-    def bundles(self) -> Bundles:
-        """Generate bundles from collected assets."""
-        return Bundles(
-            css=create_bundle(self.css, "css"),
-            js=create_bundle(self.js, "js"),
-            py=create_bundle(self.py, "py"),
-        )
-
-
-@dataclass
-class PageContext:
-    """Runtime page context with asset collection and layout."""
-
-    name: str
-    title: str
-    layout: LayoutFunc | None = None
-    assets: AssetCollector = field(default_factory=AssetCollector)
-    _bundles: Bundles | None = field(default=None, repr=False)
-
-    @property
-    def bundles(self) -> Bundles:
-        """Lazily generate bundles from collected assets."""
-        if self._bundles is None:
-            self._bundles = self.assets.bundles()
-        return self._bundles
-
-    async def render(self, content: SafeHTML) -> SafeHTML:
-        """Render content through the page's layout."""
-        if self.layout is None:
-            return content
-        return await self.layout(content, self.title, self.bundles)
 
 
 # --- Decorators ---
@@ -302,15 +235,17 @@ def layout(
     css: set[str] | None = None,
     js: set[str] | None = None,
     py: set[str] | None = None,
+    uses: set[ComponentFunc] | None = None,
 ):
     """
     Register a layout with its assets.
 
     Layouts are components that return a renderer function.
 
-    @layout(css={"/static/app.css"})
+    @layout(css={"/static/app.css"}, uses={NavBar, Footer})
     async def AppLayout(
         nav: Annotated[SafeHTML, use_component(NavBar)],
+        footer: Annotated[SafeHTML, use_component(Footer)],
     ):
         async def render(content: SafeHTML, title: str, bundles: Bundles) -> SafeHTML:
             return await html(t'...')
@@ -320,12 +255,28 @@ def layout(
     def decorator(fn: Callable) -> Callable:
         layout_name = name or fn.__name__
 
+        # Resolve component references to names
+        imports: set[str] = set()
+        for comp in uses or set():
+            if not callable(comp):
+                raise TypeError(
+                    f"Expected a component function, got {type(comp).__name__}"
+                )
+            dep_name = getattr(comp, "_htmpl_component", None)
+            if dep_name is None:
+                raise TypeError(
+                    f"'{type(comp).__name__}' is not a registered component. "
+                    f"Add the @component decorator to register it."
+                )
+            imports.add(dep_name)
+
         registry.add_layout(
             Component(
                 name=layout_name,
                 css=css or set(),
                 js=js or set(),
                 py=py or set(),
+                imports=imports,
             )
         )
 
