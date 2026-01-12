@@ -6,15 +6,16 @@ template strings for type-safe, composable HTML generation.
 """
 
 from .core import (
-    html,
-    SafeHTML,
-    Renderable,
     AsyncRenderable,
-    raw,
+    Renderable,
+    SafeHTML,
     attr,
     cached,
     cached_lru,
     cached_ttl,
+    html,
+    raw,
+    render_html,
 )
 from .elements import Element, Fragment, fragment
 from .components import (
@@ -30,11 +31,6 @@ from .components import (
     Table,
     Grid,
 )
-from .fastapi import (
-    HTMLForm,
-    FormValidationError,
-    form_validation_error_handler,
-)
 from .forms import (
     BaseForm,
     FieldConfig,
@@ -44,15 +40,16 @@ from .forms import (
 __version__ = "0.1.0"
 __all__ = [
     # Core
-    "html",
-    "SafeHTML",
-    "Renderable",
     "AsyncRenderable",
-    "raw",
+    "Renderable",
+    "SafeHTML",
     "attr",
     "cached",
     "cached_lru",
     "cached_ttl",
+    "html",
+    "raw",
+    "render_html",
     # Elements
     "Element",
     "Fragment",
@@ -69,10 +66,6 @@ __all__ = [
     "Modal",
     "Table",
     "Grid",
-    # FastAPI
-    "HTMLForm",
-    "FormValidationError",
-    "form_validation_error_handler",
     # Forms
     "BaseForm",
     "FieldConfig",

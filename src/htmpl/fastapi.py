@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import inspect
-from inspect import isawaitable
-from string.templatelib import Template
 from typing import (
     Any,
-    Awaitable,
     Callable,
     Generic,
     TypeVar,
 )
 
-from fastapi import Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from pydantic import ValidationError
+from fastapi import Depends, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import BaseModel, ValidationError
 
 from .assets import (
     registry,
@@ -25,21 +22,36 @@ from .assets import (
     Page,
     get_bundles,
 )
-from .core import SafeHTML, html
+from .core import SafeHTML, html, render_html
 from .forms import BaseForm, parse_form_errors
+
+
+T = TypeVar("T", bound=BaseForm)
+
 
 # --- Page Renderer ---
 
 
-class PageRenderer:
+class PageRenderer(Generic[T]):
     """
     Renders page content through a layout with pre-resolved assets.
 
     Usage:
+        # Simple page (no form)
         @router.get("/")
         async def home(page: Annotated[PageRenderer, page("home", layout=AppLayout)]):
-            content = section(h1("Welcome"))
-            return await page.render(content)
+            return await page(section(h1("Welcome")))
+
+        # Page with form
+        @router.post("/settings")
+        async def settings_post(
+            page: Annotated[PageRenderer[SettingsForm], page("settings", layout=AppLayout, form=SettingsForm)],
+        ):
+            if page.errors:
+                return await page.form_error(settings_template)
+
+            save_settings(page.data)
+            return page.redirect("/settings?saved=1")
     """
 
     def __init__(
@@ -47,10 +59,21 @@ class PageRenderer:
         name: str,
         title: str,
         layout: LayoutFunc | None,
+        request: Request,
+        *,
+        form_class: type[T] | None = None,
+        data: T | None = None,
+        values: dict | None = None,
+        errors: dict[str, str] | None = None,
     ):
         self.name = name
         self.title = title
         self.layout = layout
+        self.request = request
+        self.form_class = form_class
+        self.data = data
+        self.values = values or {}
+        self.errors = errors or {}
         self._bundles: Bundles | None = None
 
     @property
@@ -60,20 +83,79 @@ class PageRenderer:
             self._bundles = get_bundles(self.name)
         return self._bundles
 
-    async def render(self, content: Any) -> HTMLResponse:
+    @property
+    def is_htmx(self) -> bool:
+        """Check if request is from HTMX."""
+        return self.request.headers.get("HX-Request") == "true"
+
+    async def __call__(self, content: Any) -> HTMLResponse:
         """Render content through layout and return HTMLResponse."""
-        rendered = await render_html(content)
-        if rendered is None:
-            rendered = SafeHTML(str(content))
-
         if self.layout:
-            final = await self.layout(rendered, self.title, self.bundles)
-            return HTMLResponse(final.content)
+            laid_out = await self.layout(content, self.title, self.bundles)
+            return await render_html(laid_out)
+        return await render_html(content)
 
-        return HTMLResponse(rendered.content)
+    async def form_error(
+        self,
+        template: Callable[[type[T], dict, dict[str, str]], Any],
+    ) -> HTMLResponse:
+        """Render the form template with current values and errors."""
+        if self.form_class is None:
+            raise ValueError("No form class configured for this page")
+        content = await template(self.form_class, self.values, self.errors)
+        return await self(content)
+
+    def redirect(
+        self,
+        url: str,
+        *,
+        status_code: int = 303,  # See Other - correct for POST->GET
+    ) -> Response:
+        """Redirect after form submission. Auto-detects HTMX."""
+        if self.is_htmx:
+            return Response(
+                status_code=200,
+                headers={"HX-Redirect": url},
+            )
+        return RedirectResponse(url=url, status_code=status_code)
+
+    def refresh(self) -> Response:
+        """Refresh the current page. For HTMX or standard redirect."""
+        if self.is_htmx:
+            return Response(
+                status_code=200,
+                headers={"HX-Refresh": "true"},
+            )
+        return RedirectResponse(url=str(self.request.url), status_code=303)
 
 
 # --- Page Dependency ---
+class ParsedForm(BaseModel, Generic[T]):
+    data: T | None = None
+    values: dict
+    errors: dict
+
+
+async def parse_form(request: Request, form: type[T] | None) -> ParsedForm[T]:
+    if form is not None and request.method in ("POST", "PUT", "PATCH"):
+        form_data = await request.form()
+        values = dict(form_data)
+
+        # Handle checkboxes
+        for field_name, cfg in form.get_field_configs().items():
+            if cfg.widget == "checkbox" and field_name in form_data:
+                values[field_name] = True  # type: ignore
+
+        try:
+            data = form.model_validate(values)
+            errors = {}
+        except ValidationError as e:
+            errors = parse_form_errors(e)
+            data = None
+
+        return ParsedForm(data=data, values=values, errors=errors)
+
+    return ParsedForm(data=None, values={}, errors={})
 
 
 def page(
@@ -81,17 +163,29 @@ def page(
     *,
     title: str = "Page",
     layout: Callable | None = None,
+    form: type[BaseForm] | None = None,
     uses: set[ComponentFunc] | None = None,
 ):
     """
     Page dependency that returns a PageRenderer.
 
-    Assets are resolved statically via the layout's `uses={}` dependencies.
-
     Usage:
-        @router.get("/")
-        async def home(page: Annotated[PageRenderer, page("home", layout=AppLayout)]):
-            return await page.render(section(h1("Welcome")))
+        # GET - no form
+        @router.get("/settings")
+        async def settings_get(
+            page: Annotated[PageRenderer, page("settings", layout=AppLayout)],
+        ):
+            return await page(settings_template(SettingsForm, {}, {}))
+
+        # POST - with form
+        @router.post("/settings")
+        async def settings_post(
+            page: Annotated[PageRenderer[SettingsForm], page("settings", layout=AppLayout, form=SettingsForm)],
+        ):
+            if page.errors:
+                return await page.form_error(settings_template)
+            save_settings(page.data)
+            return page.redirect("/settings")
     """
     # Register dependencies
     imports: set[str] = set()
@@ -132,10 +226,19 @@ def page(
 
         async def setup(request: Request, **kwargs) -> PageRenderer:
             resolved_layout = await layout(**kwargs)
+
+            # Parse form if configured
+            parsed = await parse_form(request, form)
+
             return PageRenderer(
                 name=name,
                 title=title,
                 layout=resolved_layout,
+                request=request,
+                form_class=form,
+                data=parsed.data,
+                values=parsed.values,
+                errors=parsed.errors,
             )
 
         setup.__signature__ = inspect.Signature(parameters=params)  # type: ignore
@@ -143,11 +246,19 @@ def page(
 
     else:
 
-        def setup_simple(request: Request) -> PageRenderer:
+        async def setup_simple(request: Request) -> PageRenderer:
+            # Parse form if configured
+            parsed = await parse_form(request, form)
+
             return PageRenderer(
                 name=name,
                 title=title,
                 layout=layout,
+                request=request,
+                form_class=form,
+                data=parsed.data,
+                values=parsed.values,
+                errors=parsed.errors,
             )
 
         return Depends(setup_simple)
@@ -171,7 +282,7 @@ def use_component(
         async def NavBar(user: Annotated[User, Depends(get_user)]):
             return await html(t'<nav>Welcome {user.name}</nav>')
 
-        @layout()
+        @layout(uses={NavBar})
         async def AppLayout(nav: Annotated[SafeHTML, use_component(NavBar)]):
             ...
     """
@@ -204,97 +315,3 @@ def use_component(
     render.__name__ = f"use_{comp_name}"
 
     return Depends(render)
-
-
-# --- Helpers ---
-
-
-async def render_html(result: Any) -> SafeHTML | None:
-    """Render an Element/SafeHTML/Template to SafeHTML."""
-    if isinstance(result, SafeHTML):
-        return result
-
-    if isinstance(result, Template):
-        return await html(result)
-
-    if isawaitable(result):
-        content = await result
-        return await render_html(content)
-
-    if hasattr(result, "__html__"):
-        content = result.__html__()
-        if isawaitable(content):
-            content = await content
-        return SafeHTML(content)
-
-    return None
-
-
-# --- Form Handling ---
-
-
-class FormValidationError(HTTPException):
-    """Raised when form validation fails - contains the rendered HTML response."""
-
-    def __init__(self, content: SafeHTML | None):
-        super().__init__(status_code=200, detail="Form validation failed")
-        self.response = HTMLResponse(
-            content=content.content if content else "", status_code=200
-        )
-
-
-async def form_validation_error_handler(request: Request, exc: FormValidationError):
-    return exc.response
-
-
-T = TypeVar("T", bound=BaseForm)
-
-
-class HTMLForm(Generic[T]):
-    """
-    Dependency that validates form data and re-renders template on errors.
-
-    Usage:
-        async def login_page(renderer, values, errors):
-            return section(
-                h1("Login"),
-                renderer.render(action="/login", values=values, errors=errors)
-            )
-
-        @router.get("/login")
-        async def show_login():
-            return await login_page(login_form, {}, {})
-
-        @router.post("/login")
-        async def handle_login(
-            data: LoginSchema = Depends(HTMLForm(LoginSchema, login_page)),
-        ):
-            # Only reached if validation succeeds
-            return htmx_redirect("/dashboard")
-    """
-
-    def __init__(
-        self,
-        model: type[T],
-        template: Callable[[type[T], dict, dict], Awaitable[SafeHTML]],
-    ):
-        self.model = model
-        self.template = template
-
-    async def __call__(self, request: Request) -> T:
-        """Validate form data or raise FormValidationError with rendered template."""
-        form_data = await request.form()
-        values = dict(form_data)
-
-        # Handle checkboxes
-        for name, cfg in self.model.get_field_configs().items():
-            if cfg.widget == "checkbox" and name in form_data:
-                values[name] = True  # type: ignore
-
-        try:
-            return self.model(**values)
-        except ValidationError as e:
-            errors = parse_form_errors(e)
-            html_result = await self.template(self.model, values, errors)
-            content = await render_html(html_result)
-            raise FormValidationError(content)

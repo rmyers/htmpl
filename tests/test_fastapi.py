@@ -1,20 +1,20 @@
 """
 Tests for htmpl FastAPI integration.
 """
+from typing import Annotated
 
+from fastapi.responses import HTMLResponse
 import pytest
-from fastapi import APIRouter, FastAPI, Request, Depends
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import Field, EmailStr
 
-from htmpl import html, forms, SafeHTML
-from htmpl.elements import section, h1, p, div, article, form, button
+from htmpl import html, forms, SafeHTML, render_html
+from htmpl.elements import section, h1, p, article, form, button
 from htmpl.htmx import is_htmx
 from htmpl.fastapi import (
-    HTMLRoute,
-    HTMLForm,
-    FormValidationError,
-    form_validation_error_handler,
+    PageRenderer,
+    page,
 )
 
 
@@ -22,24 +22,24 @@ class TestRouter:
     @pytest.fixture
     def app(self):
         app = FastAPI()
-        router = APIRouter(route_class=HTMLRoute)
+        router = APIRouter()
 
         @router.get("/")
-        async def home():
-            return section(h1("Home"))
+        async def home(pr: Annotated[PageRenderer, page("home")]):
+            return await pr(section(h1("Home")))
 
         @router.get("/user/{name}")
-        async def user(name: str):
-            return p(f"Hello, {name}!")
+        async def user(name: str, pr: Annotated[PageRenderer, page("user")]):
+            return await pr(p(f"Hello, {name}!"))
 
         @router.get("/template")
-        async def template_route():
+        async def template_route(pr: Annotated[PageRenderer, page("tr")]):
             name = "World"
-            return t"<div>Hello, {name}!</div>"
+            return await pr(t"<div>Hello, {name}!</div>")
 
         @router.get("/safe")
-        async def safe_route():
-            return SafeHTML("<strong>Safe</strong>")
+        async def safe_route(pr: Annotated[PageRenderer, page("sr")]):
+            return await pr(SafeHTML("<strong>Safe</strong>"))
 
         @router.get("/json")
         async def json_route():
@@ -83,7 +83,7 @@ class TestFormRouter:
     @pytest.fixture
     def app(self):
         app = FastAPI()
-        router = APIRouter(route_class=HTMLRoute)
+        router = APIRouter()
 
         class LoginSchema(forms.BaseForm):
             email: EmailStr = Field(examples=["foo@bar.com"], description="Your email dah")
@@ -94,41 +94,49 @@ class TestFormRouter:
             email: EmailStr
             agree_tos: bool
 
-        async def signup_form(renderer: type[SignupSchema], values, errors):
+        async def signup_template(form_class: type[SignupSchema], values, errors):
             return article(
-                h1("Custom Login"),
-                renderer.render(values=values, errors=errors),
+                h1("Signup"),
+                form_class.render(action="/signup", values=values, errors=errors),
             )
 
-        async def login_form(renderer: type[LoginSchema], values, errors):
+        async def login_template(form_class: type[LoginSchema], values, errors):
             return article(
                 h1("Custom Login"),
                 form(
-                    renderer.render_field("email", values.get("email"), errors.get("email")),
-                    renderer.render_field("password", error=errors.get("password")),
+                    form_class.render_field("email", values.get("email"), errors.get("email")),
+                    form_class.render_field("password", error=errors.get("password")),
                     button("Custom Submit", type="submit"),
-                    action="/custom-login",
+                    action="/login",
+                    method="post",
                 ),
             )
 
         @router.get("/login")
-        async def login_page():
-            return await login_form(LoginSchema, {}, {})
+        async def login_page(pr: Annotated[PageRenderer, page("login_get")]):
+            return await pr(await login_template(LoginSchema, {}, {}))
 
         @router.post("/login")
-        async def login(data: LoginSchema = Depends(HTMLForm(LoginSchema, login_form))):
-            return section(h1(f"Welcome, {data.email}!"))
+        async def login(
+            pr: Annotated[PageRenderer[LoginSchema], page("login_post", form=LoginSchema)],
+        ):
+            if pr.errors:
+                return await pr.form_error(login_template)
+            return await pr(section(h1(f"Welcome, {pr.data.email}!")))
 
         @router.get("/signup")
-        async def signup_page(data: SignupSchema = Depends(HTMLForm(SignupSchema, signup_form))):
-            return await signup_form(SignupSchema, {}, {})
+        async def signup_page(pr: Annotated[PageRenderer, page("signup_get")]):
+            return await pr(await signup_template(SignupSchema, {}, {}))
 
         @router.post("/signup")
-        async def signup(data: SignupSchema = Depends(HTMLForm(SignupSchema, signup_form))):
-            return section(h1(f"Account created for {data.username}!"))
+        async def signup(
+            pr: Annotated[PageRenderer[SignupSchema], page("signup_post", form=SignupSchema)],
+        ):
+            if pr.errors:
+                return await pr.form_error(signup_template)
+            return await pr(section(h1(f"Account created for {pr.data.username}!")))
 
         app.include_router(router)
-        app.add_exception_handler(FormValidationError, form_validation_error_handler)  # type: ignore
         return app
 
     @pytest.fixture
@@ -236,6 +244,64 @@ class TestFormRouter:
         assert 'aria-invalid="true"' in response.text
 
 
+class TestPageRenderer:
+    """Test PageRenderer features."""
+
+    @pytest.fixture
+    def app(self):
+        app = FastAPI()
+        router = APIRouter()
+
+        @router.get("/redirect-test")
+        async def redirect_test(pr: Annotated[PageRenderer, page("redirect")]):
+            return pr.redirect("/target")
+
+        @router.get("/htmx-redirect-test")
+        async def htmx_redirect_test(pr: Annotated[PageRenderer, page("htmx_redirect")]):
+            return pr.redirect("/target")
+
+        @router.get("/refresh-test")
+        async def refresh_test(pr: Annotated[PageRenderer, page("refresh")]):
+            return pr.refresh()
+
+        @router.get("/is-htmx")
+        async def is_htmx_route(pr: Annotated[PageRenderer, page("is_htmx")]):
+            return await pr(p(f"is_htmx: {pr.is_htmx}"))
+
+        app.include_router(router)
+        return app
+
+    @pytest.fixture
+    def client(self, app):
+        return TestClient(app, follow_redirects=False)
+
+    def test_redirect_standard(self, client):
+        response = client.get("/redirect-test")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/target"
+
+    def test_redirect_htmx(self, client):
+        response = client.get("/htmx-redirect-test", headers={"HX-Request": "true"})
+        assert response.status_code == 200
+        assert response.headers["HX-Redirect"] == "/target"
+
+    def test_refresh_standard(self, client):
+        response = client.get("/refresh-test")
+        assert response.status_code == 303
+
+    def test_refresh_htmx(self, client):
+        response = client.get("/refresh-test", headers={"HX-Request": "true"})
+        assert response.status_code == 200
+        assert response.headers["HX-Refresh"] == "true"
+
+    def test_is_htmx_false(self, client):
+        response = client.get("/is-htmx")
+        assert "is_htmx: False" in response.text
+
+    def test_is_htmx_true(self, client):
+        response = client.get("/is-htmx", headers={"HX-Request": "true"})
+        assert "is_htmx: True" in response.text
+
 
 class TestIntegration:
     """Integration tests with a more complete app."""
@@ -243,11 +309,12 @@ class TestIntegration:
     @pytest.fixture
     def app(self):
         app = FastAPI()
-        router = APIRouter(route_class=HTMLRoute)
+        router = APIRouter()
 
         @router.get("/")
-        async def home() -> SafeHTML:
-            return await html(t"""
+        async def home() -> HTMLResponse:
+            return await render_html(
+                t"""
                 <!DOCTYPE html>
                 <html>
                 <body>
@@ -257,27 +324,32 @@ class TestIntegration:
                     </div>
                 </body>
                 </html>
-            """)
+            """
+            )
 
         @router.get("/partial")
-        async def partial(request: Request) -> SafeHTML:
+        async def partial(request: Request) -> HTMLResponse:
             if is_htmx(request):
-                return await html(t"<p>Partial content loaded!</p>")
+                return await render_html(t"<p>Partial content loaded!</p>")
             # Full page for direct access
-            return await html(t"""
+            return await render_html(
+                t"""
                 <!DOCTYPE html>
                 <html><body><p>Partial content loaded!</p></body></html>
-            """)
+            """
+            )
 
         @router.get("/users")
-        async def users(q: str = "") -> SafeHTML:
+        async def users(q: str = "") -> HTMLResponse:
             all_users = ["Alice", "Bob", "Charlie"]
             filtered = [u for u in all_users if q.lower() in u.lower()] if q else all_users
-            return await html(t"""
+            return await render_html(
+                t"""
                 <ul>
                     {[t"<li>{user}</li>" for user in filtered]}
                 </ul>
-            """)
+            """
+            )
 
         app.include_router(router)
         return app

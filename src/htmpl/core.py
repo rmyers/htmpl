@@ -13,6 +13,8 @@ from inspect import isasyncgen, isawaitable
 from string.templatelib import Template, Interpolation
 from typing import Protocol, runtime_checkable, Any, Callable, TypeVar
 
+from fastapi.responses import HTMLResponse
+
 
 @runtime_checkable
 class Renderable(Protocol):
@@ -97,6 +99,24 @@ async def html(template: Template) -> SafeHTML:
                 parts.append(rendered)
 
     return SafeHTML("".join(parts).strip())
+
+
+async def render_html(result: Any) -> HTMLResponse:
+    """Render an Element/SafeHTML/Template to SafeHTML."""
+    if isinstance(result, SafeHTML):
+        return HTMLResponse(result)
+
+    if isinstance(result, Template):
+        content = await html(result)
+        return HTMLResponse(content)
+
+    if hasattr(result, "__html__"):
+        content = result.__html__()
+        if isawaitable(content):
+            content = await content
+        return HTMLResponse(SafeHTML(content))
+
+    return HTMLResponse("")
 
 
 async def _render_value(value: Any, conversion: str | None, format_spec: str) -> str:
