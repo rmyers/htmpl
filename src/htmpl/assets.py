@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Protocol, cast, runtime_checkable
+from typing import Annotated, Any, Awaitable, Callable, Protocol, cast, runtime_checkable
 import hashlib
 import json
 import os
@@ -112,13 +112,6 @@ class Registry:
     def layouts(self) -> dict[str, Component]:
         return self._layouts.copy()
 
-    @property
-    def manifest(self) -> dict | None:
-        return self._manifest
-
-    def set_manifest(self, manifest: dict) -> None:
-        self._manifest = manifest
-
     def add_component(self, comp: Component) -> None:
         self._components[comp.name] = comp
 
@@ -185,6 +178,30 @@ def _get_bundle_urls(files: set[str], ext: str) -> list[str]:
     return [url] if url else []
 
 
+# --- Markers ---
+
+
+class _BundlesMarker:
+    """Marker for bundles dependency in layouts."""
+    pass
+
+
+def use_bundles() -> Bundles:
+    """Dependency marker for bundles injection in layouts.
+
+    Usage:
+        @layout(css={"app.css"}, title="Page")
+        async def AppLayout(
+            content: SafeHTML,
+            bundles: Annotated[Bundles, use_bundles()],
+            nav: Annotated[SafeHTML, use_component(NavBar)],
+            title: str,
+        ):
+            return await html(t'<html>...')
+    """
+    return _BundlesMarker()  # type: ignore
+
+
 # --- Decorators ---
 
 
@@ -219,8 +236,21 @@ def layout(
     css: set[str] | None = None,
     js: set[str] | None = None,
     py: set[str] | None = None,
+    **defaults,
 ):
-    """Register a layout with its assets."""
+    """Register a layout with its assets and default kwargs.
+
+    Usage:
+        @layout(css={"static/css/app.css"}, title="Page", body_class="")
+        async def AppLayout(
+            content: SafeHTML,
+            bundles: Annotated[Bundles, use_bundles()],
+            nav: Annotated[SafeHTML, use_component(NavBar)],
+            title: str,
+            body_class: str,
+        ):
+            return await html(t'<html>...')
+    """
 
     def decorator(fn: Callable) -> Callable:
         name = qualified_name(fn)
@@ -234,6 +264,7 @@ def layout(
             )
         )
         fn._htmpl_layout = name
+        fn._htmpl_defaults = defaults
         return fn
 
     return decorator
@@ -338,7 +369,6 @@ def save_manifest() -> None:
     """Prebuild all unique bundles and save manifest."""
     BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Collect all unique file sets
     all_css: set[str] = set()
     all_js: set[str] = set()
     all_py: set[str] = set()
@@ -348,7 +378,6 @@ def save_manifest() -> None:
         all_js |= comp.js
         all_py |= comp.py
 
-    # Build combined bundles
     data: dict = {"bundles": {}}
     if css := create_bundle(all_css, "css"):
         data["bundles"]["css"] = css
@@ -363,9 +392,9 @@ def save_manifest() -> None:
 
 def load_manifest() -> dict:
     """Load manifest from disk (cached)."""
-    if registry.manifest is None:
+    if registry._manifest is None:
         path = BUNDLE_DIR / "manifest.json"
-        registry.set_manifest(
+        registry._manifest = (
             json.loads(path.read_text()) if path.exists() else {"bundles": {}}
         )
-    return registry.manifest or {}
+    return registry._manifest

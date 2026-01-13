@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi.responses import HTMLResponse
 import pytest
-from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import Field, EmailStr
 
@@ -18,6 +18,7 @@ from htmpl.assets import (
     layout,
     registry,
     qualified_name,
+    use_bundles,
 )
 from htmpl.fastapi import PageRenderer, use_layout, use_component
 
@@ -40,36 +41,35 @@ async def NavBar(user: str = "Guest"):
     return await html(t"<nav>Welcome, {user}</nav>")
 
 
-@layout(css={"static/css/app.css"})
-async def AppLayout(nav: Annotated[SafeHTML, use_component(NavBar)]):
-    async def render(
-        content: SafeHTML,
-        bundles: Bundles,
-        *,
-        title: str = "Page",
-        body_class: str = "",
-    ) -> SafeHTML:
-        return await html(t"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>{title}</title>
-                {await bundles.head()}
-            </head>
-            <body class="{body_class}">
-                {nav}
-                <main>{content}</main>
-            </body>
-            </html>
-        """)
-    return render
+@layout(css={"static/css/app.css"}, title="Page", body_class="")
+async def AppLayout(
+    content: SafeHTML,
+    bundles: Annotated[Bundles, use_bundles()],
+    nav: Annotated[SafeHTML, use_component(NavBar)],
+    title: str,
+    body_class: str,
+):
+    return await html(t"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>{title}</title>
+            {await bundles.head()}
+        </head>
+        <body class="{body_class}">
+            {nav}
+            <main>{content}</main>
+        </body>
+        </html>
+    """)
 
 
 @layout()
-async def MinimalLayout():
-    async def render(content: SafeHTML, bundles: Bundles) -> SafeHTML:
-        return await html(t"<div class='minimal'>{content}</div>")
-    return render
+async def MinimalLayout(
+    content: SafeHTML,
+    bundles: Annotated[Bundles, use_bundles()],
+):
+    return await html(t"<div class='minimal'>{content}</div>")
 
 
 # --- Tests ---
@@ -129,6 +129,11 @@ class TestRouter:
         async def custom_class(page: Annotated[PageRenderer, use_layout(AppLayout)]):
             return await page(p("Custom"), title="Custom", body_class="dark-mode")
 
+        @router.get("/default-title")
+        async def default_title(page: Annotated[PageRenderer, use_layout(AppLayout)]):
+            # Uses default title="Page" from decorator
+            return await page(p("Default"))
+
         @router.get("/json")
         async def json_route():
             return {"message": "json"}
@@ -167,6 +172,10 @@ class TestRouter:
     def test_custom_body_class(self, client):
         response = client.get("/custom-class")
         assert 'class="dark-mode"' in response.text
+
+    def test_default_title_from_decorator(self, client):
+        response = client.get("/default-title")
+        assert "<title>Page</title>" in response.text
 
     def test_json_passthrough(self, client):
         response = client.get("/json")
@@ -330,11 +339,9 @@ class TestAssetIntegration:
         app = FastAPI()
         router = APIRouter()
 
-        @router.get("/with-components")
-        async def with_components(page: Annotated[PageRenderer, use_layout(AppLayout)]):
-            # Use components via use_component in layout (NavBar)
-            # AppLayout already uses NavBar, so its CSS should be collected
-            return await page(section(h1("Components")), title="Components")
+        @router.get("/with-layout")
+        async def with_layout(page: Annotated[PageRenderer, use_layout(AppLayout)]):
+            return await page(section(h1("With Layout")), title="Test")
 
         @router.get("/partial")
         async def partial():
@@ -350,23 +357,21 @@ class TestAssetIntegration:
         return TestClient(app)
 
     def test_layout_collects_assets(self, client):
-        response = client.get("/with-components")
+        response = client.get("/with-layout")
         assert response.status_code == 200
-        # Layout's CSS should be referenced (app.css, nav.css)
-        # In dev mode without actual files, bundles won't be created
-        # but the collector should have gathered the CSS paths
         assert "<head>" in response.text
+        # NavBar component should be rendered
+        assert "<nav>Welcome, Guest</nav>" in response.text
 
     def test_partial_no_layout(self, client):
         response = client.get("/partial")
         assert response.status_code == 200
         assert "<button class='btn'>Click</button>" in response.text
-        # No DOCTYPE because no layout
         assert "<!DOCTYPE" not in response.text
 
 
 class TestIntegration:
-    """Integration tests with a complete app."""
+    """Integration tests with raw render_html usage."""
 
     @pytest.fixture
     def app(self):
@@ -380,9 +385,7 @@ class TestIntegration:
                 <html>
                 <body>
                     <h1>Home</h1>
-                    <div id="content">
-                        <button hx-get="/partial" hx-target="#content">Load</button>
-                    </div>
+                    <button hx-get="/partial" hx-target="#content">Load</button>
                 </body>
                 </html>
             """)
@@ -391,20 +394,13 @@ class TestIntegration:
         async def partial(request: Request) -> HTMLResponse:
             if is_htmx(request):
                 return await render_html(t"<p>Partial loaded!</p>")
-            return await render_html(t"""
-                <!DOCTYPE html>
-                <html><body><p>Partial loaded!</p></body></html>
-            """)
+            return await render_html(t"<!DOCTYPE html><html><body><p>Partial loaded!</p></body></html>")
 
         @router.get("/users")
         async def users(q: str = "") -> HTMLResponse:
             all_users = ["Alice", "Bob", "Charlie"]
             filtered = [u for u in all_users if q.lower() in u.lower()] if q else all_users
-            return await render_html(t"""
-                <ul>
-                    {[t"<li>{user}</li>" for user in filtered]}
-                </ul>
-            """)
+            return await render_html(t"<ul>{[t'<li>{user}</li>' for user in filtered]}</ul>")
 
         app.include_router(router)
         return app
