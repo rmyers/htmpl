@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Protocol, TypeAlias, cast, runtime_checkable
+from typing import Awaitable, Callable, Protocol, cast, runtime_checkable
 import hashlib
 import json
 import os
@@ -22,6 +22,11 @@ ESBUILD = shutil.which("esbuild")
 logger = logging.getLogger(__name__)
 
 
+def qualified_name(fn: Callable) -> str:
+    """Get fully qualified name for a function."""
+    return f"{fn.__module__}.{fn.__name__}"
+
+
 @runtime_checkable
 class ComponentFunc(Protocol):
     """Protocol for decorated component functions."""
@@ -36,52 +41,37 @@ class ComponentFunc(Protocol):
 
 @dataclass
 class Component:
-    """Component definition with its assets and dependencies."""
+    """Component definition with its assets."""
 
     name: str
     css: set[str] = field(default_factory=set)
     js: set[str] = field(default_factory=set)
     py: set[str] = field(default_factory=set)
-    imports: set[str] = field(default_factory=set)
-
-
-@dataclass
-class Page:
-    """Page definition with its assets, dependencies, and metadata."""
-
-    name: str
-    title: str
-    css: set[str] = field(default_factory=set)
-    js: set[str] = field(default_factory=set)
-    py: set[str] = field(default_factory=set)
-    imports: set[str] = field(default_factory=set)
-    layout: str | None = None
 
 
 @dataclass
 class Bundles:
-    """Bundle URLs for a page."""
+    """Bundle URLs for collected components."""
 
-    css: str | None = None
-    js: str | None = None
-    py: str | None = None
+    css: list[str] = field(default_factory=list)
+    js: list[str] = field(default_factory=list)
+    py: list[str] = field(default_factory=list)
 
-    def head(self) -> str:
+    async def head(self) -> SafeHTML:
         """Generate HTML tags for document head."""
-        parts = []
-        if self.css:
-            parts.append(f'<link rel="stylesheet" href="{self.css}">')
-        if self.js:
-            parts.append(f'<script src="{self.js}" defer></script>')
-        if self.py:
-            parts.append(
-                '<script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>'
-            )
-            parts.append(f'<script type="py" src="{self.py}" async></script>')
-        return "\n    ".join(parts)
+        from .core import html, Template
 
-    def to_dict(self) -> dict:
-        return {"css": self.css, "js": self.js, "py": self.py}
+        result: Template = t""
+        for url in self.css:
+            result += t'<link rel="stylesheet" href="{url}">'
+        for url in self.js:
+            result += t'<script src="{url}" defer></script>'
+        if self.py:
+            result += t'<script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>'
+            for url in self.py:
+                result += t'<script type="py" src="{url}" async></script>'
+
+        return await html(result)
 
 
 # --- Types ---
@@ -91,36 +81,19 @@ class LayoutRenderer(Protocol):
     """Protocol for layout render functions."""
 
     def __call__(
-        self, content: SafeHTML, title: str, bundles: Bundles
+        self, content: SafeHTML, bundles: Bundles, **kwargs
     ) -> Awaitable[SafeHTML]: ...
-
-
-LayoutFunc: TypeAlias = Callable[[SafeHTML, str, Bundles], Awaitable[SafeHTML]]
 
 
 # --- Registry ---
 
 
 class Registry:
-    """
-    Singleton registry for components, layouts, and pages.
-
-    Usage:
-        from htmpl.assets import registry
-
-        # Register
-        registry.add_component(comp)
-        registry.add_page(page)
-
-        # Retrieve
-        comp = registry.get_component("name")
-        pages = registry.pages
-    """
+    """Singleton registry for components and layouts."""
 
     _instance: "Registry | None" = None
     _components: dict[str, Component]
     _layouts: dict[str, Component]
-    _pages: dict[str, Page]
     _manifest: dict | None
 
     def __new__(cls) -> "Registry":
@@ -128,7 +101,6 @@ class Registry:
             cls._instance = super().__new__(cls)
             cls._instance._components = {}
             cls._instance._layouts = {}
-            cls._instance._pages = {}
             cls._instance._manifest = None
         return cls._instance
 
@@ -141,8 +113,11 @@ class Registry:
         return self._layouts.copy()
 
     @property
-    def pages(self) -> dict[str, Page]:
-        return self._pages.copy()
+    def manifest(self) -> dict | None:
+        return self._manifest
+
+    def set_manifest(self, manifest: dict) -> None:
+        self._manifest = manifest
 
     def add_component(self, comp: Component) -> None:
         self._components[comp.name] = comp
@@ -151,202 +126,117 @@ class Registry:
         self._components[comp.name] = comp
         self._layouts[comp.name] = comp
 
-    def add_page(self, page: Page) -> None:
-        self._pages[page.name] = page
-
     def get_component(self, name: str) -> Component | None:
         return self._components.get(name)
 
     def get_layout(self, name: str) -> Component | None:
         return self._layouts.get(name)
 
-    def get_page(self, name: str) -> Page | None:
-        return self._pages.get(name)
+    def resolve(self, fn: Callable) -> Component | None:
+        """Resolve a function to its registered component."""
+        name = getattr(fn, "_htmpl_component", None) or getattr(fn, "_htmpl_layout", None)
+        return self._components.get(name) if name else None
 
     def clear(self) -> None:
-        """Clear all registrations. Useful for testing."""
         self._components.clear()
         self._layouts.clear()
-        self._pages.clear()
         self._manifest = None
 
 
-# Global singleton instance
 registry = Registry()
+
+
+# --- Asset Collector ---
+
+
+@dataclass
+class AssetCollector:
+    """Collects assets during request, deduplicates, resolves to bundles."""
+
+    css: set[str] = field(default_factory=set)
+    js: set[str] = field(default_factory=set)
+    py: set[str] = field(default_factory=set)
+
+    def add(self, comp: Component) -> None:
+        """Add a component's assets to the collector."""
+        self.css |= comp.css
+        self.js |= comp.js
+        self.py |= comp.py
+
+    def add_by_name(self, name: str) -> None:
+        """Add assets by component name."""
+        if comp := registry.get_component(name):
+            self.add(comp)
+
+    def bundles(self) -> Bundles:
+        """Resolve collected assets to bundle URLs."""
+        return Bundles(
+            css=_get_bundle_urls(self.css, "css"),
+            js=_get_bundle_urls(self.js, "js"),
+            py=_get_bundle_urls(self.py, "py"),
+        )
+
+
+def _get_bundle_urls(files: set[str], ext: str) -> list[str]:
+    """Get bundle URL(s) for a set of files."""
+    if not files:
+        return []
+    url = create_bundle(files, ext)
+    return [url] if url else []
 
 
 # --- Decorators ---
 
 
 def component(
-    name: str | None = None,
     *,
     css: set[str] | None = None,
     js: set[str] | None = None,
     py: set[str] | None = None,
-    uses: set[ComponentFunc] | None = None,
 ):
-    """
-    Register a component with its assets and dependencies.
-
-    @component(
-        css={"/static/css/dropdown.css"},
-        py={"/static/py/dropdown.py"},
-    )
-    async def dropdown(trigger, items): ...
-    """
+    """Register a component with its assets."""
 
     def decorator(fn: Callable) -> ComponentFunc:
-        comp_name = name or fn.__name__
-
-        imports: set[str] = set()
-        for comp in uses or set():
-            if not callable(comp):
-                raise TypeError(
-                    f"Expected a component function, got {type(comp).__name__}"
-                )
-            dep_name = getattr(comp, "_htmpl_component", None)
-            if dep_name is None:
-                raise TypeError(
-                    f"'{type(comp).__name__}' is not a registered component. "
-                    f"Add the @component decorator to register it."
-                )
-            imports.add(dep_name)
+        name = qualified_name(fn)
 
         registry.add_component(
             Component(
-                name=comp_name,
+                name=name,
                 css=css or set(),
                 js=js or set(),
                 py=py or set(),
-                imports=imports,
             )
         )
         fn = cast(ComponentFunc, fn)
-        fn._htmpl_component = comp_name
+        fn._htmpl_component = name
         return fn
 
     return decorator
 
 
 def layout(
-    name: str | None = None,
     *,
     css: set[str] | None = None,
     js: set[str] | None = None,
     py: set[str] | None = None,
-    uses: set[ComponentFunc] | None = None,
 ):
-    """
-    Register a layout with its assets.
-
-    Layouts are components that return a renderer function.
-
-    @layout(css={"/static/app.css"}, uses={NavBar, Footer})
-    async def AppLayout(
-        nav: Annotated[SafeHTML, use_component(NavBar)],
-        footer: Annotated[SafeHTML, use_component(Footer)],
-    ):
-        async def render(content: SafeHTML, title: str, bundles: Bundles) -> SafeHTML:
-            return await html(t'...')
-        return render
-    """
+    """Register a layout with its assets."""
 
     def decorator(fn: Callable) -> Callable:
-        layout_name = name or fn.__name__
-
-        # Resolve component references to names
-        imports: set[str] = set()
-        for comp in uses or set():
-            if not callable(comp):
-                raise TypeError(
-                    f"Expected a component function, got {type(comp).__name__}"
-                )
-            dep_name = getattr(comp, "_htmpl_component", None)
-            if dep_name is None:
-                raise TypeError(
-                    f"'{type(comp).__name__}' is not a registered component. "
-                    f"Add the @component decorator to register it."
-                )
-            imports.add(dep_name)
+        name = qualified_name(fn)
 
         registry.add_layout(
             Component(
-                name=layout_name,
+                name=name,
                 css=css or set(),
                 js=js or set(),
                 py=py or set(),
-                imports=imports,
             )
         )
-
-        fn._htmpl_layout = layout_name
+        fn._htmpl_layout = name
         return fn
 
     return decorator
-
-
-# --- Resolution ---
-
-
-@dataclass
-class ResolvedAssets:
-    """Collected assets from resolving a component tree."""
-
-    css: set[str] = field(default_factory=set)
-    js: set[str] = field(default_factory=set)
-    py: set[str] = field(default_factory=set)
-
-    def merge(self, other: "ResolvedAssets") -> None:
-        self.css |= other.css
-        self.js |= other.js
-        self.py |= other.py
-
-
-def resolve_component(comp_name: str, seen: set[str] | None = None) -> ResolvedAssets:
-    """Recursively resolve all assets for a component."""
-    seen = seen if seen is not None else set()
-
-    if comp_name in seen:
-        return ResolvedAssets()
-    seen.add(comp_name)
-
-    comp = registry.get_component(comp_name)
-    if not comp:
-        return ResolvedAssets()
-
-    assets = ResolvedAssets()
-
-    for imp in comp.imports:
-        assets.merge(resolve_component(imp, seen))
-
-    assets.css |= comp.css
-    assets.js |= comp.js
-    assets.py |= comp.py
-
-    return assets
-
-
-def resolve_page(page_name: str) -> ResolvedAssets:
-    """Resolve all assets for a page including all imported components."""
-    page_def = registry.get_page(page_name)
-    if not page_def:
-        return ResolvedAssets()
-
-    assets = ResolvedAssets()
-    seen: set[str] = set()
-
-    if page_def.layout:
-        assets.merge(resolve_component(page_def.layout, seen))
-
-    for imp in page_def.imports:
-        assets.merge(resolve_component(imp, seen))
-
-    assets.css |= page_def.css
-    assets.js |= page_def.js
-    assets.py |= page_def.py
-
-    return assets
 
 
 # --- Bundling ---
@@ -358,6 +248,8 @@ def _hash(content: str) -> str:
 
 def _bundle_with_esbuild(files: list[Path], outfile: Path, ext: str) -> bool:
     """Bundle files using esbuild. Returns True on success."""
+    if not ESBUILD:
+        return False
     entry = outfile.with_suffix(f".entry.{ext}")
     try:
         if ext == "css":
@@ -385,14 +277,20 @@ def _bundle_with_esbuild(files: list[Path], outfile: Path, ext: str) -> bool:
         entry.unlink()
         return True
     except subprocess.CalledProcessError as exc:
-        logger.warning(f"esbuild failed: {exc.stderr} {exc.stdout}")
+        logger.warning(f"esbuild failed: {exc.stderr}")
         if entry.exists():
             entry.unlink()
         return False
 
 
+def _fallback_bundle(files: list[Path], outfile: Path) -> None:
+    """Manual concatenation fallback."""
+    parts = [f.read_text() for f in files]
+    outfile.write_text("\n\n".join(parts))
+
+
 def create_bundle(files: set[str], ext: str) -> str | None:
-    """Create a bundled file from a set of source files."""
+    """Create a bundle for a set of files, returns URL."""
     if not files:
         return None
 
@@ -419,14 +317,13 @@ def create_bundle(files: set[str], ext: str) -> str | None:
     if path.exists():
         return final_path
 
-    logger.info(f"building: {filename} from: {file_names}")
+    logger.info(f"building: {filename}")
     start_time = time.perf_counter()
 
-    if ext in ("css", "js") and ESBUILD:
-        if _bundle_with_esbuild(local_files, path, ext):
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-            logger.info(f"built with esbuild in {elapsed_ms:.1f}ms")
-            return final_path
+    if ext in ("css", "js") and _bundle_with_esbuild(local_files, path, ext):
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"built with esbuild in {elapsed_ms:.1f}ms")
+        return final_path
 
     _fallback_bundle(local_files, path)
     elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -434,49 +331,41 @@ def create_bundle(files: set[str], ext: str) -> str | None:
     return final_path
 
 
-def _fallback_bundle(files: list[Path], outfile: Path) -> None:
-    """Manual concatenation fallback when esbuild unavailable."""
-    parts = [f.read_text() for f in files]
-    outfile.write_text("\n\n".join(parts))
-
-
-def bundle_page(page_name: str) -> Bundles:
-    """Create all bundles for a page."""
-    assets = resolve_page(page_name)
-    return Bundles(
-        css=create_bundle(assets.css, "css"),
-        js=create_bundle(assets.js, "js"),
-        py=create_bundle(assets.py, "py"),
-    )
-
-
-# --- Manifest ---
+# --- Manifest (for prebuilding) ---
 
 
 def save_manifest() -> None:
-    """Save all page bundles to manifest."""
+    """Prebuild all unique bundles and save manifest."""
     BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
-    data = {"pages": {}}
-    for name in registry.pages:
-        bundles = bundle_page(name)
-        data["pages"][name] = bundles.to_dict()
+
+    # Collect all unique file sets
+    all_css: set[str] = set()
+    all_js: set[str] = set()
+    all_py: set[str] = set()
+
+    for comp in registry.components.values():
+        all_css |= comp.css
+        all_js |= comp.js
+        all_py |= comp.py
+
+    # Build combined bundles
+    data: dict = {"bundles": {}}
+    if css := create_bundle(all_css, "css"):
+        data["bundles"]["css"] = css
+    if js := create_bundle(all_js, "js"):
+        data["bundles"]["js"] = js
+    if py := create_bundle(all_py, "py"):
+        data["bundles"]["py"] = py
+
     (BUNDLE_DIR / "manifest.json").write_text(json.dumps(data, indent=2))
+    registry._manifest = data
 
 
-def load_manifest() -> dict | None:
+def load_manifest() -> dict:
     """Load manifest from disk (cached)."""
-    if registry._manifest is None:
+    if registry.manifest is None:
         path = BUNDLE_DIR / "manifest.json"
-        registry._manifest = (
-            json.loads(path.read_text()) if path.exists() else {"pages": {}}
+        registry.set_manifest(
+            json.loads(path.read_text()) if path.exists() else {"bundles": {}}
         )
-    return registry._manifest
-
-
-def get_bundles(page_name: str) -> Bundles:
-    """Get bundles for a page - from manifest if prebuilt, else generate."""
-    if PREBUILT:
-        if manifest := load_manifest():
-            data = manifest.get("pages", {}).get(page_name, {})
-            return Bundles(css=data.get("css"), js=data.get("js"), py=data.get("py"))
-    return bundle_page(page_name)
+    return registry.manifest or {}
