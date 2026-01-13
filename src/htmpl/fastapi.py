@@ -23,13 +23,33 @@ from .assets import (
     AssetCollector,
     Bundles,
     ComponentFunc,
-    _BundlesMarker,
 )
 from .core import SafeHTML, render_html
 from .forms import BaseForm, parse_form_errors
 
 
 T = TypeVar("T", bound=BaseForm)
+
+
+# --- Bundles Dependency ---
+
+
+async def use_bundles(request: Request) -> Bundles:
+    """Dependency that provides bundles for asset collection.
+
+    Usage:
+        @layout(css={"static/app.css"}, title="Page")
+        async def AppLayout(
+            content: SafeHTML,
+            bundles: Annotated[Bundles, Depends(use_bundles)],
+            nav: Annotated[SafeHTML, use_component(NavBar)],
+            title: str,
+        ):
+            return await html(t'<html><head>{await bundles.head()}</head>...')
+    """
+    if not hasattr(request.state, "htmpl_collector"):
+        request.state.htmpl_collector = AssetCollector()
+    return Bundles(_collector=request.state.htmpl_collector)
 
 
 # --- Page Renderer ---
@@ -45,7 +65,6 @@ class PageRenderer(Generic[T]):
         *,
         defaults: dict[str, Any] | None = None,
         resolved_deps: dict[str, Any] | None = None,
-        bundles_param: str | None = None,
         form_class: type[T] | None = None,
         data: T | None = None,
         values: dict | None = None,
@@ -55,7 +74,6 @@ class PageRenderer(Generic[T]):
         self.request = request
         self.defaults = defaults or {}
         self.resolved_deps = resolved_deps or {}
-        self.bundles_param = bundles_param
         self.form_class = form_class
         self.data = data
         self.values = values or {}
@@ -67,13 +85,6 @@ class PageRenderer(Generic[T]):
         return getattr(self.request.state, "htmpl_collector", None)
 
     @property
-    def bundles(self) -> Bundles:
-        """Resolve collected assets to bundles."""
-        if self.collector:
-            return self.collector.bundles()
-        return Bundles()
-
-    @property
     def is_htmx(self) -> bool:
         return self.request.headers.get("HX-Request") == "true"
 
@@ -81,11 +92,6 @@ class PageRenderer(Generic[T]):
         """Render content through layout and return HTMLResponse."""
         # Merge: defaults < resolved_deps < call kwargs
         merged = {**self.defaults, **self.resolved_deps, **kwargs}
-
-        # Inject bundles if layout expects it
-        if self.bundles_param:
-            merged[self.bundles_param] = self.bundles
-
         laid_out = await self.layout(content, **merged)
         return await render_html(laid_out)
 
@@ -143,15 +149,6 @@ async def parse_form(request: Request, form: type[T] | None) -> ParsedForm[T]:
 # --- Helpers ---
 
 
-def _has_marker(annotation, marker_type: type) -> bool:
-    """Check if an annotation contains a specific marker type."""
-    if get_origin(annotation) is Annotated:
-        for meta in get_args(annotation)[1:]:
-            if type(meta) is marker_type:
-                return True
-    return False
-
-
 def _is_depends(annotation) -> bool:
     """Get Depends from annotation if present."""
     if get_origin(annotation) is Annotated:
@@ -170,15 +167,17 @@ def use_layout(
     form: type[BaseForm] | None = None,
 ):
     """
-    Layout dependency - sets up asset collector and returns PageRenderer.
+    Layout dependency - returns PageRenderer for rendering content through layout.
 
-    The layout function is called directly with content + deps + kwargs.
+    The layout function receives content + dependencies + kwargs.
+    Dependencies (use_bundles, use_component) are resolved by FastAPI.
+    Default kwargs come from the @layout decorator.
 
     Usage:
         @layout(css={"static/app.css"}, title="Page")
         async def AppLayout(
             content: SafeHTML,
-            bundles: Annotated[Bundles, use_bundles()],
+            bundles: Annotated[Bundles, Depends(use_bundles)],
             nav: Annotated[SafeHTML, use_component(NavBar)],
             title: str,
         ):
@@ -195,9 +194,7 @@ def use_layout(
     params_list = list(sig.parameters.items())
 
     # First param is content, skip it
-    # Find bundles param and component deps
-    bundles_param: str | None = None
-
+    # Collect FastAPI dependencies
     fastapi_params = [
         inspect.Parameter(
             "request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request
@@ -205,10 +202,7 @@ def use_layout(
     ]
 
     for pname, p in params_list[1:]:  # Skip content param
-        if _has_marker(p.annotation, _BundlesMarker):
-            bundles_param = pname
-        elif _is_depends(p.annotation):
-            # This is a use_component or other FastAPI dep
+        if _is_depends(p.annotation):
             fastapi_params.append(
                 inspect.Parameter(
                     pname,
@@ -219,13 +213,10 @@ def use_layout(
             )
 
     async def setup(request: Request, **kwargs) -> PageRenderer:
-        # Initialize collector
-        collector = AssetCollector()
-        request.state.htmpl_collector = collector
-
-        # Register layout's assets
+        # Register layout's assets if collector exists
         if layout_name:
-            collector.add_by_name(layout_name)
+            if collector := getattr(request.state, "htmpl_collector", None):
+                collector.add_by_name(layout_name)
 
         # Parse form if configured
         parsed = await parse_form(request, form)
@@ -234,8 +225,7 @@ def use_layout(
             layout=layout_fn,
             request=request,
             defaults=defaults,
-            resolved_deps=kwargs,  # use_component results
-            bundles_param=bundles_param,
+            resolved_deps=kwargs,  # use_bundles, use_component results
             form_class=form,
             data=parsed.data,
             values=parsed.values,

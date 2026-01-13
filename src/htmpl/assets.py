@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, Awaitable, Callable, Protocol, cast, runtime_checkable
+from typing import Awaitable, Callable, Protocol, cast, runtime_checkable
 import hashlib
 import json
 import os
@@ -53,25 +53,35 @@ class Component:
 class Bundles:
     """Bundle URLs for collected components."""
 
-    css: list[str] = field(default_factory=list)
-    js: list[str] = field(default_factory=list)
-    py: list[str] = field(default_factory=list)
+    _collector: AssetCollector
 
     async def head(self) -> SafeHTML:
         """Generate HTML tags for document head."""
         from .core import html, Template
 
+        # Resolve at render time after all components registered
+        resolved = self._collector.bundles()
+
         result: Template = t""
-        for url in self.css:
+        for url in resolved.css:
             result += t'<link rel="stylesheet" href="{url}">'
-        for url in self.js:
+        for url in resolved.js:
             result += t'<script src="{url}" defer></script>'
-        if self.py:
+        if resolved.py:
             result += t'<script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>'
-            for url in self.py:
+            for url in resolved.py:
                 result += t'<script type="py" src="{url}" async></script>'
 
         return await html(result)
+
+
+@dataclass
+class ResolvedBundles:
+    """Resolved bundle URLs."""
+
+    css: list[str] = field(default_factory=list)
+    js: list[str] = field(default_factory=list)
+    py: list[str] = field(default_factory=list)
 
 
 # --- Types ---
@@ -161,9 +171,9 @@ class AssetCollector:
         if comp := registry.get_component(name):
             self.add(comp)
 
-    def bundles(self) -> Bundles:
+    def bundles(self) -> ResolvedBundles:
         """Resolve collected assets to bundle URLs."""
-        return Bundles(
+        return ResolvedBundles(
             css=_get_bundle_urls(self.css, "css"),
             js=_get_bundle_urls(self.js, "js"),
             py=_get_bundle_urls(self.py, "py"),
@@ -176,30 +186,6 @@ def _get_bundle_urls(files: set[str], ext: str) -> list[str]:
         return []
     url = create_bundle(files, ext)
     return [url] if url else []
-
-
-# --- Markers ---
-
-
-class _BundlesMarker:
-    """Marker for bundles dependency in layouts."""
-    pass
-
-
-def use_bundles() -> Bundles:
-    """Dependency marker for bundles injection in layouts.
-
-    Usage:
-        @layout(css={"app.css"}, title="Page")
-        async def AppLayout(
-            content: SafeHTML,
-            bundles: Annotated[Bundles, use_bundles()],
-            nav: Annotated[SafeHTML, use_component(NavBar)],
-            title: str,
-        ):
-            return await html(t'<html>...')
-    """
-    return _BundlesMarker()  # type: ignore
 
 
 # --- Decorators ---
@@ -397,4 +383,4 @@ def load_manifest() -> dict:
         registry._manifest = (
             json.loads(path.read_text()) if path.exists() else {"bundles": {}}
         )
-    return registry._manifest
+    return registry._manifest or {}

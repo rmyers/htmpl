@@ -2,25 +2,51 @@
 Example form handling with Pydantic + htmpl + HTMX.
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, Request, Form
-from pydantic import BaseModel, Field, EmailStr, field_validator
+from fastapi import APIRouter, Depends, FastAPI, Request
+from pydantic import Field, EmailStr, field_validator
 
-from htmpl import html, SafeHTML
-from htmpl.elements import button, section, h1, h2, p, div, article, form
-from htmpl.forms import FormRenderer, parse_form_errors
-from htmpl.fastapi import html_response
-from htmpl.htmx import HX
+from htmpl import html, SafeHTML, render_html
+from htmpl.assets import Bundles, layout
+from htmpl.elements import button, section, h1, h2, p, article, form
+from htmpl.forms import BaseForm, parse_form_errors
+from htmpl.fastapi import PageRenderer, use_layout, use_bundles
 
 
-app = FastAPI(debug=True)
+router = APIRouter()
+
+
+# --- Layout ---
+
+
+@layout(title="Forms Demo")
+async def FormsLayout(
+    content: SafeHTML,
+    bundles: Annotated[Bundles, Depends(use_bundles)],
+    title: str,
+):
+    return await html(t"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>{title}</title>
+            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+            <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+            <style>.error {{ color: var(--pico-del-color); }}</style>
+            {await bundles.head()}
+        </head>
+        <body>
+            <main class="container">{content}</main>
+        </body>
+        </html>
+    """)
 
 
 # --- Schema definitions with validation rules ---
 
 
-class SignupSchema(BaseModel):
+class SignupForm(BaseForm):
     username: str = Field(
         min_length=3,
         max_length=20,
@@ -64,13 +90,13 @@ class SignupSchema(BaseModel):
         return v
 
 
-class LoginSchema(BaseModel):
+class LoginForm(BaseForm):
     email: EmailStr = Field(title="Email")
     password: str = Field(title="Password")
     remember_me: bool = Field(default=False, title="Remember me")
 
 
-class ContactSchema(BaseModel):
+class ContactForm(BaseForm):
     name: str = Field(min_length=2, title="Your Name")
     email: EmailStr = Field(title="Email")
     subject: str = Field(min_length=5, max_length=100, title="Subject")
@@ -90,182 +116,134 @@ class ContactSchema(BaseModel):
     )
 
 
-# --- Create form renderers ---
-
-signup_form = FormRenderer(SignupSchema)
-login_form = FormRenderer(LoginSchema)
-contact_form = FormRenderer(ContactSchema)
+# --- Templates ---
 
 
-def render_signup(values: dict, errors: dict):
-    return form(
+async def signup_template(form_class: type[SignupForm], values: dict, errors: dict):
+    return article(
         h2("Create Account"),
-        # Inline fields (grid row)
-        signup_form.inline("username", "age", values=values, errors=errors),
-        # Grouped fields
-        signup_form.group("Contact", "email", "bio", values=values, errors=errors),
-        signup_form.inline("password", "confirm_password", values=values, errors=errors),
-        # Regular wrapped field
-        signup_form.render_field("agree_tos", value=values, error=errors),
-        button("Sign Up", type="submit"),
-        action="/signup",
-        method="post",
-        hx_boost="true",
+        form(
+            form_class.inline("username", "age", values=values, errors=errors),
+            form_class.group("Contact", "email", "bio", values=values, errors=errors),
+            form_class.inline("password", "confirm_password", values=values, errors=errors),
+            form_class.render_field("plan", values.get("plan"), errors.get("plan")),
+            form_class.render_field("agree_tos", values.get("agree_tos"), errors.get("agree_tos")),
+            button("Sign Up", type="submit"),
+            action="/signup",
+            method="post",
+        ),
+    )
+
+
+async def login_template(form_class: type[LoginForm], values: dict, errors: dict):
+    return article(
+        h1("Login"),
+        form_class.render(action="/login", values=values, errors=errors, submit_text="Sign In"),
+    )
+
+
+async def contact_template(form_class: type[ContactForm], values: dict, errors: dict):
+    return section(
+        h1("Contact Us"),
+        form_class.render(action="/contact", values=values, errors=errors, submit_text="Send Message"),
     )
 
 
 # --- Routes ---
 
 
-@app.get("/signup")
-@html_response
-async def signup_page() -> SafeHTML:
+@router.get("/signup")
+async def signup_page(page: Annotated[PageRenderer, use_layout(FormsLayout)]):
     values = {"username": "Bob"}
-    custom_form = render_signup(values, {})
-
-    return await html(t"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Sign Up</title>
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-            <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-            <style>.error {{ color: var(--pico-del-color); }}</style>
-        </head>
-        <body>
-            <main class="container">
-                {custom_form}
-            </main>
-        </body>
-        </html>
-    """)
+    return await page(await signup_template(SignupForm, values, {}), title="Sign Up")
 
 
-@app.post("/signup")
-@html_response
-async def signup_submit(request: Request) -> SafeHTML:
-    form_data = await request.form()
-    data = dict(form_data)
-    print(data)
-    # Convert checkbox
-    data["agree_tos"] = "agree_tos" in data
+@router.post("/signup")
+async def signup_submit(
+    page: Annotated[PageRenderer[SignupForm], use_layout(FormsLayout, form=SignupForm)],
+):
+    if page.errors:
+        return await page.form_error(signup_template, title="Sign Up")
 
-    # Validate
-    try:
-        validated = SignupSchema(**data)
-        # Success! Would save to DB here
-        return await html(t"""
-            {
-            article(
-                h1("Welcome, {validated.username}!"),
-                p("Your account has been created."),
-            )
-        }
-        """)
-    except Exception as e:
-        print(e)
-        errors = parse_form_errors(e)
-        # Re-render form with errors
-        custom_form = render_signup(data, errors)
-
-        return await html(t"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Sign Up</title>
-                <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-                <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-                <style>.error {{ color: var(--pico-del-color); }}</style>
-            </head>
-            <body>
-                <main class="container">
-                    {custom_form}
-                </main>
-            </body>
-            </html>
-        """)
-
-
-@app.get("/login")
-@html_response
-async def login_page() -> SafeHTML:
-    return await html(t"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Login</title>
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-            <style>.error {{ color: var(--pico-del-color); }}</style>
-        </head>
-        <body>
-            <main class="container">
-                {
+    # Success! Would save to DB here
+    return await page(
         article(
-            h1("Login"),
-            login_form.render(action="/login", submit_text="Sign In"),
-        )
-    }
-            </main>
-        </body>
-        </html>
-    """)
+            h1(f"Welcome, {page.data.username}!"),
+            p("Your account has been created."),
+        ),
+        title="Welcome",
+    )
 
 
-@app.get("/contact")
-@html_response
-async def contact_page() -> SafeHTML:
-    return await html(t"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Contact Us</title>
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-            <style>.error {{ color: var(--pico-del-color); }}</style>
-        </head>
-        <body>
-            <main class="container">
-                {
-        section(
-            h1("Contact Us"),
-            contact_form.render(action="/contact", submit_text="Send Message"),
-        )
-    }
-            </main>
-        </body>
-        </html>
-    """)
+@router.get("/login")
+async def login_page(page: Annotated[PageRenderer, use_layout(FormsLayout)]):
+    return await page(await login_template(LoginForm, {}, {}), title="Login")
+
+
+@router.post("/login")
+async def login_submit(
+    page: Annotated[PageRenderer[LoginForm], use_layout(FormsLayout, form=LoginForm)],
+):
+    if page.errors:
+        return await page.form_error(login_template, title="Login")
+
+    # Would authenticate here
+    return page.redirect("/dashboard")
+
+
+@router.get("/contact")
+async def contact_page(page: Annotated[PageRenderer, use_layout(FormsLayout)]):
+    return await page(await contact_template(ContactForm, {}, {}), title="Contact Us")
+
+
+@router.post("/contact")
+async def contact_submit(
+    page: Annotated[PageRenderer[ContactForm], use_layout(FormsLayout, form=ContactForm)],
+):
+    if page.errors:
+        return await page.form_error(contact_template, title="Contact Us")
+
+    # Would send email here
+    return await page(
+        article(
+            h1("Message Sent"),
+            p(f"Thanks {page.data.name}, we'll get back to you soon!"),
+        ),
+        title="Message Sent",
+    )
 
 
 # --- Inline HTMX validation endpoint ---
 
 
-@app.post("/validate/{field}")
-@html_response
-async def validate_field(field: str, request: Request) -> SafeHTML:
+@router.post("/validate/{field}")
+async def validate_field(field: str, request: Request):
     """Validate a single field via HTMX."""
     form_data = await request.form()
     value = form_data.get(field, "")
 
-    # Partial validation using field's type
-    field_info = SignupSchema.model_fields.get(field)
+    field_info = SignupForm.model_fields.get(field)
     if not field_info:
-        return await html(t"")
+        return await render_html(t"")
 
     try:
-        # Validate just this field
-        SignupSchema.__pydantic_validator__.validate_assignment(
-            SignupSchema.model_construct(),
+        SignupForm.__pydantic_validator__.validate_assignment(
+            SignupForm.model_construct(),
             field,
             value,
         )
-        return await html(t'<small class="success">✓</small>')
+        return await render_html(t'<small class="success">✓</small>')
     except Exception as e:
         errors = parse_form_errors(e)
         msg = errors.get(field, "Invalid")
-        return await html(t'<small class="error">{msg}</small>')
+        return await render_html(t'<small class="error">{msg}</small>')
 
+
+# App setup
+
+app = FastAPI(debug=True)
+app.include_router(router)
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("forms:app", host="0.0.0.0", port=8000, reload=True)

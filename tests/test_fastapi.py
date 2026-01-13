@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi.responses import HTMLResponse
 import pytest
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import Field, EmailStr
 
@@ -18,9 +18,8 @@ from htmpl.assets import (
     layout,
     registry,
     qualified_name,
-    use_bundles,
 )
-from htmpl.fastapi import PageRenderer, use_layout, use_component
+from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles
 
 
 # --- Test Fixtures: Components & Layouts ---
@@ -44,7 +43,7 @@ async def NavBar(user: str = "Guest"):
 @layout(css={"static/css/app.css"}, title="Page", body_class="")
 async def AppLayout(
     content: SafeHTML,
-    bundles: Annotated[Bundles, use_bundles()],
+    bundles: Annotated[Bundles, Depends(use_bundles)],
     nav: Annotated[SafeHTML, use_component(NavBar)],
     title: str,
     body_class: str,
@@ -67,7 +66,7 @@ async def AppLayout(
 @layout()
 async def MinimalLayout(
     content: SafeHTML,
-    bundles: Annotated[Bundles, use_bundles()],
+    bundles: Annotated[Bundles, Depends(use_bundles)],
 ):
     return await html(t"<div class='minimal'>{content}</div>")
 
@@ -84,9 +83,9 @@ class TestQualifiedName:
 class TestAssetCollector:
     def test_empty_collector(self):
         collector = AssetCollector()
-        bundles = collector.bundles()
-        assert bundles.css == []
-        assert bundles.js == []
+        resolved = collector.bundles()
+        assert resolved.css == []
+        assert resolved.js == []
 
     def test_add_component_assets(self):
         collector = AssetCollector()

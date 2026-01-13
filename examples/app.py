@@ -9,14 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr
 
 from htmpl import html, SafeHTML, raw
 from htmpl.assets import Bundles, component, layout, save_manifest, registry
-from htmpl.core import cached_ttl
 from htmpl.elements import (
     section,
     div,
@@ -24,10 +23,8 @@ from htmpl.elements import (
     nav,
     ul,
     li,
-    main,
     h1,
     h2,
-    h3,
     p,
     a,
     strong,
@@ -38,21 +35,14 @@ from htmpl.elements import (
     tr,
     th,
     td,
-    form,
-    label,
-    input_,
     button,
     details,
     summary,
     fragment,
-    script,
+    input_,
 )
 from htmpl.forms import BaseForm
-from htmpl.fastapi import (
-    PageRenderer,
-    page,
-    use_component,
-)
+from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles
 from htmpl.htmx import is_htmx
 
 
@@ -179,7 +169,6 @@ def ButtonLink(text: str, href: str, *, variant: str = "primary"):
 
 
 def SearchInput(name: str, *, src: str, target: str, placeholder: str = "Search..."):
-    """Sync search input - just returns an Element."""
     return input_(
         type="search",
         name=name,
@@ -192,12 +181,11 @@ def SearchInput(name: str, *, src: str, target: str, placeholder: str = "Search.
 
 
 def LazyLoad(src: str, *, placeholder=None):
-    """Sync lazy load container."""
     inner = placeholder or article("Loading...", aria_busy="true")
     return div(inner, hx_get=src, hx_trigger="load", hx_swap="outerHTML")
 
 
-# Layout Components
+# Components
 
 
 @component()
@@ -228,17 +216,24 @@ async def AppNav():
     )
 
 
-@layout(css={"/static/css/app.css"}, uses={AppNav})
-async def AppPage(navbar: Annotated[SafeHTML, use_component(AppNav)]):
-    async def render(content: SafeHTML, title: str, bundles: Bundles) -> SafeHTML:
-        return await html(t'''<!DOCTYPE html>
+# Layout - single function, no nesting
+
+
+@layout(css={"/static/css/app.css"}, title="Julython")
+async def AppPage(
+    content: SafeHTML,
+    bundles: Annotated[Bundles, Depends(use_bundles)],
+    navbar: Annotated[SafeHTML, use_component(AppNav)],
+    title: str,
+):
+    return await html(t'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{title}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    {raw(bundles.head())}
+    {await bundles.head()}
 </head>
 <body>
     {navbar}
@@ -246,14 +241,13 @@ async def AppPage(navbar: Annotated[SafeHTML, use_component(AppNav)]):
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 </body>
 </html>''')
-    return render
 
 
 # Routes
 
 
 @router.get("/")
-async def home(page: Annotated[PageRenderer, page("home", title="Julython", layout=AppPage)]):
+async def home(page: Annotated[PageRenderer, use_layout(AppPage)]):
     stats = await get_stats()
     leaderboard = await get_leaderboard()
 
@@ -274,14 +268,15 @@ async def home(page: Annotated[PageRenderer, page("home", title="Julython", layo
                 ButtonLink("View Full Leaderboard", "/board", variant="secondary"),
                 class_="mt-1",
             ),
-        )
+        ),
+        title="Julython - Code More in July",
     )
 
 
 @router.get("/board")
 async def leaderboard(
     request: Request,
-    page: Annotated[PageRenderer, page("board", title="Leaderboard", layout=AppPage)],
+    page: Annotated[PageRenderer, use_layout(AppPage)],
     q: str = "",
 ):
     users = await get_leaderboard(q)
@@ -296,12 +291,13 @@ async def leaderboard(
             h1("Leaderboard"),
             SearchInput("q", src="/board", target="#leaderboard-body", placeholder="Search users..."),
             LeaderboardTable(users),
-        )
+        ),
+        title="Leaderboard",
     )
 
 
 @router.get("/dashboard")
-async def dashboard(page: Annotated[PageRenderer, page("dashboard", title="Dashboard", layout=AppPage)]):
+async def dashboard(page: Annotated[PageRenderer, use_layout(AppPage)]):
     user = await get_current_user()
     if not user:
         return page.redirect("/login")
@@ -327,11 +323,14 @@ async def dashboard(page: Annotated[PageRenderer, page("dashboard", title="Dashb
                 RepoTable(repos),
                 class_="mt-1",
             ),
-        )
+        ),
+        title="Dashboard",
     )
 
 
 # API routes - fragments only, no layout
+
+
 @router.get("/api/commits/recent")
 async def recent_commits():
     user = await get_current_user()
@@ -359,18 +358,18 @@ async def settings_template(form_class: type[SettingsForm], values: dict, errors
 
 
 @router.get("/settings")
-async def settings_get(page: Annotated[PageRenderer, page("settings", title="Settings", layout=AppPage)]):
+async def settings_get(page: Annotated[PageRenderer, use_layout(AppPage)]):
     user = await get_current_user()
     values = {"username": user.username, "email": "bob@example.com"} if user else {}
-    return await page(await settings_template(SettingsForm, values, {}))
+    return await page(await settings_template(SettingsForm, values, {}), title="Settings")
 
 
 @router.post("/settings")
 async def settings_post(
-    page: Annotated[PageRenderer[SettingsForm], page("settings", title="Settings", layout=AppPage, form=SettingsForm)],
+    page: Annotated[PageRenderer[SettingsForm], use_layout(AppPage, form=SettingsForm)],
 ):
     if page.errors:
-        return await page.form_error(settings_template)
+        return await page.form_error(settings_template, title="Settings")
 
     # Save settings here using page.data
     # save_settings(page.data)
@@ -387,7 +386,8 @@ app.mount("/static", StaticFiles(directory=Path("static"), check_dir=False), nam
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
-logger.info(f"{registry.pages}")
+logger.info(f"Layouts: {list(registry.layouts.keys())}")
+logger.info(f"Components: {list(registry.components.keys())}")
 save_manifest()
 
 if __name__ == "__main__":
