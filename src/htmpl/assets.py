@@ -1,11 +1,6 @@
 """Asset registration and bundling system."""
 
-from ast import Or
-from collections import defaultdict, OrderedDict
-from dataclasses import dataclass, field
-from pathlib import Path
-from string.templatelib import Template
-from typing import Awaitable, Callable, Literal, Protocol, cast, runtime_checkable
+import asyncio
 import hashlib
 import json
 import os
@@ -13,8 +8,16 @@ import subprocess
 import shutil
 import logging
 import time
+from collections import defaultdict, OrderedDict
+from dataclasses import dataclass, field
+from pathlib import Path
+from string.templatelib import Template
+from typing import Awaitable, Callable, Literal, Protocol, cast, runtime_checkable
+from weakref import WeakSet
 
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from watchfiles import awatch
 
 from .core import SafeHTML, html
 
@@ -86,10 +89,10 @@ class Component:
         }
 
     @property
-    def assets(self) -> list[str]:
+    def assets(self) -> list[Path]:
         return [
-            path
-            for files in self.file_set.values()
+            path.resolve()
+            for files in self.path_set.values()
             if files
             for path in files
         ]
@@ -137,10 +140,6 @@ class ResolvedBundles:
     js: list[str] = field(default_factory=list)
     py: list[str] = field(default_factory=list)
 
-
-# --- Types ---
-
-
 class LayoutRenderer(Protocol):
     """Protocol for layout render functions."""
 
@@ -148,38 +147,6 @@ class LayoutRenderer(Protocol):
         self, content: SafeHTML, bundles: Bundles, **kwargs
     ) -> Awaitable[SafeHTML]: ...
 
-
-from watchfiles import watch, Change
-import threading
-
-class AssetWatcher:
-    def __init__(self, root: Path = Path("static")):
-        self._root = root
-        self._dirty: set[Path] = set()
-        self._watched_files: set[Path] = set()
-        self._thread: threading.Thread | None = None
-        self._stop = threading.Event()
-
-    def track(self, path: Path):
-        """Register a file we care about."""
-        self._watched_files.add(path.resolve())
-        # Start watcher on first track
-        if self._thread is None:
-            self._thread = threading.Thread(target=self._run, daemon=True)
-            self._thread.start()
-
-    def is_dirty(self, path: Path) -> bool:
-        return path.resolve() in self._dirty
-
-    def clear_dirty(self, path: Path):
-        self._dirty.discard(path.resolve())
-
-    def _run(self):
-        for changes in watch(self._root, stop_event=self._stop):
-            for change_type, changed_path in changes:
-                p = Path(changed_path).resolve()
-                if p in self._watched_files:
-                    self._dirty.add(p)
 
 
 class Manifest(BaseModel):
@@ -191,22 +158,29 @@ class Manifest(BaseModel):
         self.bundles[comp.name] = comp.generate_bundles()
 
 
-
 class Registry:
     """Singleton registry for components and layouts."""
 
     _components: dict[str, Component]
     _layouts: dict[str, Component]
-    _assets: dict[str, set[Component]]
+    _assets: dict[Path, set[Component]]
     _manifest: Manifest | None
+    _root: Path
+    _clients: WeakSet[WebSocket]
+    _watch_task: asyncio.Task | None
 
-    def __init__(self):
+    def __init__(self, root: str | Path = Path('static')):
+        if isinstance(root, str):
+            root = Path(root)
+        self._root = root
         self._components = {}
         self._layouts = {}
         self._assets = defaultdict(set)
         self._manifest = None
+        self._clients = WeakSet()
+        self._watch_task = None
 
-    def initialize(self, frozen: bool = False, watch: bool = False) -> None:
+    async def initialize(self, frozen: bool = False, watch: bool = False) -> None:
         """Configure the registry
 
         Args:
@@ -214,6 +188,8 @@ class Registry:
             watch: In dev mode watch the static directory and rebuild manifest on changes
         """
         self._load_manifest(frozen=frozen)
+        if watch:
+            await self._start_ws_watch()
 
     def _load_manifest(self, frozen: bool = False) -> None:
         path = BUNDLE_DIR / "manifest.json"
@@ -231,6 +207,40 @@ class Registry:
             if name.startswith('__mp_main__'):
                 continue
             self._manifest.add_component(comp)
+
+    async def _broadcast_reload(self):
+        for ws in list(self._clients):
+            try:
+                await ws.send_text("reload")
+            except:
+               self._clients.discard(ws)
+
+    async def _watch_loop(self, root: Path):
+        if self._manifest is None:
+            raise ManifestNotConfigured('Error brosky')
+
+        async for changes in awatch(root):
+            for _, changed_path in changes:
+                p = Path(changed_path).resolve()
+                for comp in self._assets.get(p, []):
+                    logger.info(f"Rebuilding component: {comp.name}")
+                    self._manifest.add_component(comp)
+                    await self._broadcast_reload()
+
+    async def _start_ws_watch(self):
+        if self._watch_task is None:
+            self._watch_task = asyncio.create_task(self._watch_loop(self._root))
+
+    def add_ws_client(self, ws: WebSocket) -> None:
+        self._clients.add(ws)
+
+    def remove_ws_client(self, ws: WebSocket) -> None:
+        self._clients.discard(ws)
+
+    async def teardown(self):
+        if self._watch_task:
+            self._watch_task.cancel()
+            self._watch_task = None
 
     @property
     def components(self) -> dict[str, Component]:
@@ -305,14 +315,6 @@ class AssetCollector:
             js=list(self.js.keys()),
             py=list(self.py.keys()),
         )
-
-
-def _get_bundle_urls(files: set[str], ext: str) -> str | None:
-    """Get bundle URL(s) for a set of files."""
-    return create_bundle(files, ext)
-
-
-# --- Decorators ---
 
 
 def component(
@@ -430,9 +432,6 @@ def _fallback_bundle(files: list[Path], outfile: Path) -> None:
     outfile.write_text("\n\n".join(parts))
 
 
-philly = {}
-frank = {}
-
 def create_bundle(files: set[str], ext: str) -> str | None:
     """Create a bundle for a set of files, returns URL."""
     if not files:
@@ -448,11 +447,6 @@ def create_bundle(files: set[str], ext: str) -> str | None:
         p = Path(os.path.normpath(f.lstrip("/")))
         if p.exists():
             local_files.append(p)
-            if p.name in philly:
-                logger.info(f'philly {p.name}: {philly[p.name].stat().st_mtime} vs {frank[p.name]}')
-            else:
-                philly[p.name] = p
-                frank[p.name] = p.stat().st_mtime
             file_names.append(f"{p.name}-{p.stat().st_mtime}")
 
     if not local_files:
@@ -480,30 +474,15 @@ def create_bundle(files: set[str], ext: str) -> str | None:
     return final_path
 
 
-# --- Manifest (for prebuilding) ---
+router = APIRouter()
 
 
-def save_manifest() -> None:
-    """Prebuild all unique bundles and save manifest."""
-    BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
-
-    bundles = defaultdict(dict)
-
-    for comp_name, comp in registry.components.items():
-        bundles[comp_name]["css"] = create_bundle(comp.css, 'css')
-        bundles[comp_name]["js"] = create_bundle(comp.js, 'js')
-        bundles[comp_name]["py"] = create_bundle(comp.py, 'py')
-
-    logger.info(json.dumps(bundles, indent=2))
-    # (BUNDLE_DIR / "manifest.json").write_text(json.dumps(bundles, indent=2))
-    #registry._manifest = bundles
-
-
-def load_manifest() -> dict:
-    """Load manifest from disk (cached)."""
-    if registry._manifest is None:
-        path = BUNDLE_DIR / "manifest.json"
-        registry._manifest = (
-            json.loads(path.read_text()) if path.exists() else {"bundles": {}}
-        )
-    return registry._manifest or {}
+@router.websocket("/__hmr")
+async def hmr_websocket(ws: WebSocket):
+    await ws.accept()
+    registry.add_ws_client(ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        registry.remove_ws_client(ws)

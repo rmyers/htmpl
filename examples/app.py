@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr
 
 from htmpl import html, SafeHTML, render_html
-from htmpl.assets import Bundles, component, layout, save_manifest, registry
+from htmpl.assets import Bundles, component, layout, registry, router as asset_router
 from htmpl.elements import (
     section,
     div,
@@ -225,7 +225,7 @@ async def AppNav():
 # Layout - single function, no nesting
 
 
-@layout(css={"/static/css/app.css"}, title="Julython")
+@layout(css={"/static/css/app.css"}, js={"/static/js/hmr.js"}, title="Julython")
 async def AppPage(
     content: SafeHTML,
     bundles: Annotated[Bundles, Depends(use_bundles)],
@@ -386,8 +386,18 @@ async def settings_post(
 
 # App setup
 
-app = FastAPI(debug=True)
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await registry.initialize(watch=True)
+    registry.save_manifest()
+    yield
+    await registry.teardown()
+
+app = FastAPI(debug=True, lifespan=lifespan)
 app.include_router(router)
+app.include_router(asset_router)
 app.mount("/static", StaticFiles(directory=Path("static"), check_dir=False), name="static")
 
 logging.basicConfig(level=logging.INFO)
@@ -395,8 +405,7 @@ logger = logging.getLogger()
 
 logger.info(f"Layouts: {list(registry.layouts.keys())}")
 logger.info(f"Components: {list(registry.components.keys())}")
-registry.initialize(frozen=True)
-registry.save_manifest()
+
 
 if __name__ == "__main__":
     import uvicorn
