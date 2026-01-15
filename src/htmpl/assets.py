@@ -16,6 +16,7 @@ from typing import Awaitable, Callable, Literal, Protocol, cast, runtime_checkab
 from weakref import WeakSet
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from watchfiles import awatch
 
@@ -105,7 +106,17 @@ class Component:
             "py": create_bundle(set(_file_set["py"]), 'py') if _file_set['py'] else None,
         }
 
-
+HMR = Template("""
+<script>
+(function () {
+  const ws = new WebSocket(`ws://${location.host}/__hmr`);
+  let connected = false;
+  ws.onopen = () => (connected = true);
+  ws.onmessage = () => location.reload();
+  ws.onclose = () => connected && setTimeout(() => location.reload(), 1000);
+})();
+</script>
+""")
 
 @dataclass
 class Bundles:
@@ -128,6 +139,8 @@ class Bundles:
             result += t'<script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>'
             for url in resolved.py:
                 result += t'<script type="py" src="{url}" async></script>'
+        if registry._watch_task:
+            result += HMR
 
         return html(result)
 
@@ -219,6 +232,7 @@ class Registry:
         if self._manifest is None:
             raise ManifestNotConfigured('Error brosky')
 
+        logger.info(f"Starting watcher process on files in '{root}'")
         async for changes in awatch(root):
             for _, changed_path in changes:
                 p = Path(changed_path).resolve()
@@ -479,6 +493,9 @@ router = APIRouter()
 
 @router.websocket("/__hmr")
 async def hmr_websocket(ws: WebSocket):
+    if registry._watch_task is None:
+        return await ws.close(reason="HMR not enabled")
+
     await ws.accept()
     registry.add_ws_client(ws)
     try:
@@ -486,3 +503,6 @@ async def hmr_websocket(ws: WebSocket):
             await ws.receive_text()
     except WebSocketDisconnect:
         registry.remove_ws_client(ws)
+
+
+router.mount("/static", StaticFiles(directory=Path("static"), check_dir=False), name="static")

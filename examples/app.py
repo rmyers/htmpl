@@ -225,7 +225,7 @@ async def AppNav():
 # Layout - single function, no nesting
 
 
-@layout(css={"/static/css/app.css"}, js={"/static/js/hmr.js"}, title="Julython")
+@layout(css={"/static/css/app.css"}, title="Julython")
 async def AppPage(
     content: SafeHTML,
     bundles: Annotated[Bundles, Depends(use_bundles)],
@@ -398,13 +398,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(debug=True, lifespan=lifespan)
 app.include_router(router)
 app.include_router(asset_router)
-app.mount("/static", StaticFiles(directory=Path("static"), check_dir=False), name="static")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
-
-logger.info(f"Layouts: {list(registry.layouts.keys())}")
-logger.info(f"Components: {list(registry.components.keys())}")
 
 
 if __name__ == "__main__":
