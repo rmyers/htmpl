@@ -37,6 +37,8 @@ T = TypeVar("T", bound=BaseForm)
 async def use_bundles(request: Request) -> Bundles:
     """Dependency that provides bundles for asset collection.
 
+    Note: This dependency should be added before components
+
     Usage:
         @layout(css={"static/app.css"}, title="Page")
         async def AppLayout(
@@ -45,7 +47,7 @@ async def use_bundles(request: Request) -> Bundles:
             nav: Annotated[SafeHTML, use_component(NavBar)],
             title: str,
         ):
-            return await html(t'<html><head>{await bundles.head()}</head>...')
+            return await html(t'<html><head>{bundles.head}</head>...')
     """
     if not hasattr(request.state, "htmpl_collector"):
         request.state.htmpl_collector = AssetCollector()

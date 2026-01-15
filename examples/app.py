@@ -7,14 +7,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Callable
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr
 
-from htmpl import html, SafeHTML, raw
+from htmpl import html, SafeHTML, render_html
 from htmpl.assets import Bundles, component, layout, save_manifest, registry
 from htmpl.elements import (
     section,
@@ -132,11 +132,14 @@ def LeaderboardRow(user: User, rank: int):
     )
 
 
-def LeaderboardTable(users: list[User]):
-    return table(
-        thead(tr(th("#"), th("User"), th("Commits"), th("Points"))),
-        tbody([LeaderboardRow(u, i + 1) for i, u in enumerate(users)], id="leaderboard-body"),
-    )
+@component(css={'/static/css/foo.css'})
+async def LeaderBoardTable():
+    def _lb(users: list[User]):
+        return table(
+            thead(tr(th("#"), th("User"), th("Commits"), th("Points"))),
+            tbody([LeaderboardRow(u, i + 1) for i, u in enumerate(users)], id="leaderboard-body"),
+        )
+    return _lb
 
 
 def CommitCard(message: str, repo: str, points: int, timestamp: str):
@@ -168,16 +171,19 @@ def ButtonLink(text: str, href: str, *, variant: str = "primary"):
     return a(text, href=href, role="button", class_=cls)
 
 
-def SearchInput(name: str, *, src: str, target: str, placeholder: str = "Search..."):
-    return input_(
-        type="search",
-        name=name,
-        placeholder=placeholder,
-        hx_get=src,
-        hx_target=target,
-        hx_trigger="input changed delay:300ms, search",
-        hx_swap="innerHTML",
-    )
+@component(css={"/static/css/foo.css"})
+async def SearchInput() -> Callable:
+    def search_inpt(name: str, *, src: str, target: str, placeholder: str = "Search..."):
+        return input_(
+            type="search",
+            name=name,
+            placeholder=placeholder,
+            hx_get=src,
+            hx_target=target,
+            hx_trigger="input changed delay:300ms, search",
+            hx_swap="innerHTML",
+        )
+    return search_inpt
 
 
 def LazyLoad(src: str, *, placeholder=None):
@@ -233,7 +239,7 @@ async def AppPage(
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{title}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    {await bundles.head()}
+    {bundles.head}
 </head>
 <body>
     {navbar}
@@ -247,7 +253,7 @@ async def AppPage(
 
 
 @router.get("/")
-async def home(page: Annotated[PageRenderer, use_layout(AppPage)]):
+async def home(page: Annotated[PageRenderer, use_layout(AppPage)], lb: Annotated[Callable, use_component(LeaderBoardTable)]):
     stats = await get_stats()
     leaderboard = await get_leaderboard()
 
@@ -264,7 +270,7 @@ async def home(page: Annotated[PageRenderer, use_layout(AppPage)]):
             ),
             section(
                 h2("Leaderboard"),
-                LeaderboardTable(leaderboard[:10]),
+                lb(leaderboard[:10]),
                 ButtonLink("View Full Leaderboard", "/board", variant="secondary"),
                 class_="mt-1",
             ),
@@ -277,20 +283,21 @@ async def home(page: Annotated[PageRenderer, use_layout(AppPage)]):
 async def leaderboard(
     request: Request,
     page: Annotated[PageRenderer, use_layout(AppPage)],
+    search_input: Annotated[Callable, use_component(SearchInput)],
+    lb: Annotated[Callable, use_component(LeaderBoardTable)],
     q: str = "",
 ):
     users = await get_leaderboard(q)
 
     # HTMX partial - just the rows
     if is_htmx(request):
-        rows = fragment(*[LeaderboardRow(u, i + 1) for i, u in enumerate(users)])
-        return HTMLResponse(await rows.__html__())
+        return await render_html(fragment(*[LeaderboardRow(u, i + 1) for i, u in enumerate(users)]))
 
     return await page(
         fragment(
             h1("Leaderboard"),
-            SearchInput("q", src="/board", target="#leaderboard-body", placeholder="Search users..."),
-            LeaderboardTable(users),
+            search_input("q", src="/board", target="#leaderboard-body", placeholder="Search users..."),
+            lb(users),
         ),
         title="Leaderboard",
     )
@@ -388,7 +395,8 @@ logger = logging.getLogger()
 
 logger.info(f"Layouts: {list(registry.layouts.keys())}")
 logger.info(f"Components: {list(registry.components.keys())}")
-save_manifest()
+registry.initialize(frozen=True)
+registry.save_manifest()
 
 if __name__ == "__main__":
     import uvicorn
