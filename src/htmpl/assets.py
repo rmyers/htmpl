@@ -45,20 +45,44 @@ class ComponentFunc(Protocol):
     def __call__(self, *args, **kwargs) -> Awaitable[SafeHTML]: ...
 
 
+ALLOWED_EXTENSIONS = {'.css', '.js', '.ts', '.py'}
+
 def safe_path(path: str) -> Path | None:
-    root = registry._static_dir.resolve()
+    root = registry.static_dir
     rel = Path(path.lstrip('/'))
+
+    # Explicit blocklist checks
+    if '..' in rel.parts:
+        logger.warning(f"Attempting to use relative paths {rel}")
+        return None
+    if any(part.startswith('.') for part in rel.parts):
+        logger.warning(f"Attempting to use hidden files {rel}")
+        return None  # No hidden files
+    if rel.suffix.lower() not in ALLOWED_EXTENSIONS:
+        logger.warning(f"Suffix not allowed {rel}")
+        return None
 
     # Strip root dir name if path starts with it
     # e.g., "static/button.css" with root="/tmp/static" -> "button.css"
     if rel.parts and rel.parts[0] == root.name:
         rel = Path(*rel.parts[1:]) if len(rel.parts) > 1 else Path()
 
-    resolved = (root / rel).resolve()
+    # Resolve WITHOUT following symlinks first
+    candidate = root / rel
 
-    if not resolved.is_relative_to(root):
+    # Reject symlinks entirely
+    if candidate.is_symlink():
+        logger.warning(f"Attempting to use symlinked files {rel}")
+        return None
+
+    resolved = candidate.resolve()
+    root_path = root.resolve()
+
+    if not resolved.is_relative_to(root_path):
+        logger.warning(f"Attempting to add asset not contained in static dir {resolved}")
         return None
     if not resolved.exists():
+        logger.warning(f"Asset file not found {resolved}")
         return None
     return resolved
 
@@ -299,6 +323,22 @@ class Registry:
     @property
     def layouts(self) -> dict[str, Component]:
         return self._layouts.copy()
+
+    @property
+    def watch(self) -> bool:
+        return self._watch
+
+    @property
+    def frozen(self) -> bool:
+        return self._frozen
+
+    @property
+    def static_dir(self) -> Path:
+        return self._static_dir
+
+    @property
+    def bundles_dir(self) -> Path:
+        return self._bundle_dir
 
     def add_component(self, comp: Component) -> None:
         self._components[comp.name] = comp

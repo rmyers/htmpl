@@ -1,5 +1,6 @@
 """Tests for htmpl FastAPI integration."""
 
+import re
 from typing import Annotated
 
 import tempfile
@@ -24,7 +25,7 @@ from htmpl.assets import (
 from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="function", autouse=True)
 async def setup_registry():
     with tempfile.TemporaryDirectory() as tempy:
         temp = Path(tempy)
@@ -108,26 +109,33 @@ class TestQualifiedName:
 
 
 class TestAssetCollector:
+
+    def assert_matches(self, collection, pattern: str):
+        """Assert all items in collection match the regex pattern."""
+        regex = re.compile(pattern)
+        for item in collection:
+            assert regex.match(item), f"'{item}' does not match pattern '{pattern}'"
+
     def test_empty_collector(self):
         collector = AssetCollector()
         resolved = collector.bundles()
         assert resolved.css == []
         assert resolved.js == []
 
-    def test_add_by_name(self, setup_registry):
-        print(registry.components)
-        print(registry._manifest)
+    def test_add_by_name(self):
         collector = AssetCollector()
         collector.add_by_name(qualified_name(Card))
-        assert "static/card.css" in collector.css
-        assert "static/card.js" in collector.js
+        assert len(collector.css) == 1
+        assert len(collector.js) == 1
+        self.assert_matches(collector.css, r'/assets/styles-[a-f0-9]+\.css$')
+        self.assert_matches(collector.js, r'/assets/scripts-[a-f0-9]+\.js$')
 
     async def test_deduplication(self):
-        await registry.initialize(frozen=True)
         collector = AssetCollector()
         collector.add_by_name(qualified_name(Button))
         collector.add_by_name(qualified_name(Button))
-        assert collector.css == {"static/css/button.css"}
+        assert len(collector.css) == 1
+        self.assert_matches(collector.css, r'/assets/styles-[a-f0-9]+\.css$')
 
 
 class TestRouter:
