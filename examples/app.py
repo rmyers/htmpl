@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr
 
 from htmpl import html, SafeHTML, render_html
-from htmpl.assets import Bundles, component, layout, registry, router as asset_router
+from htmpl.assets import Bundles, component, layout, registry
 from htmpl.elements import (
     section,
     div,
@@ -42,7 +42,7 @@ from htmpl.elements import (
     input_,
 )
 from htmpl.forms import BaseForm
-from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles
+from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles, add_assets_routes
 from htmpl.htmx import is_htmx
 
 
@@ -397,7 +397,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(debug=True, lifespan=lifespan)
 app.include_router(router)
-app.include_router(asset_router)
+add_assets_routes(app)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()

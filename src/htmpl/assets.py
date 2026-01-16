@@ -15,16 +15,11 @@ from string.templatelib import Template
 from typing import Awaitable, Callable, Literal, Protocol, cast, runtime_checkable
 from weakref import WeakSet
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
+from fastapi import WebSocket
 from pydantic import BaseModel
 from watchfiles import awatch
 
 from .core import SafeHTML, html
-
-BUNDLE_DIR = Path(os.environ.get("HTMPL_BUNDLE_DIR", "static/bundles"))
-PREBUILT = os.environ.get("HTMPL_PREBUILT") == "1"
-MINIFY = os.environ.get("HTMPL_MINIFY", "1") == "1"
 
 ESBUILD = shutil.which("esbuild")
 
@@ -51,14 +46,21 @@ class ComponentFunc(Protocol):
 
 
 def safe_path(path: str) -> Path | None:
-    root = Path().cwd()
+    root = registry._static_dir.resolve()
     rel = Path(path.lstrip('/'))
+
+    # Strip root dir name if path starts with it
+    # e.g., "static/button.css" with root="/tmp/static" -> "button.css"
+    if rel.parts and rel.parts[0] == root.name:
+        rel = Path(*rel.parts[1:]) if len(rel.parts) > 1 else Path()
+
     resolved = (root / rel).resolve()
-    if not resolved.is_relative_to(root.resolve()):
+
+    if not resolved.is_relative_to(root):
         return None
-    if resolved.exists():
-        return Path(rel)
-    return None
+    if not resolved.exists():
+        return None
+    return resolved
 
 @dataclass
 class Component:
@@ -136,7 +138,7 @@ class Bundles:
         for url in resolved.js:
             result += t'<script src="{url}" defer></script>'
         if resolved.py:
-            result += t'<script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>'
+            result += t'<script type="module" src="https://pyscript.net/releases/2025.11.2/core.js"></script>'
             for url in resolved.py:
                 result += t'<script type="py" src="{url}" async></script>'
         if registry._watch_task:
@@ -163,63 +165,92 @@ class LayoutRenderer(Protocol):
 
 
 class Manifest(BaseModel):
-    components: dict[componentName, dict[AssetType, list[str] | None]] = {}
     bundles: dict[componentName, dict[AssetType, str | None]] = {}
 
     def add_component(self, comp: Component) -> None:
-        self.components[comp.name] = comp.file_set
         self.bundles[comp.name] = comp.generate_bundles()
 
 
 class Registry:
     """Singleton registry for components and layouts."""
 
+    _instance: "Registry | None" = None
     _components: dict[str, Component]
     _layouts: dict[str, Component]
     _assets: dict[Path, set[Component]]
+    _frozen: bool = False
+    _watch: bool = False
     _manifest: Manifest | None
-    _root: Path
+    _static_dir: Path
+    _bundle_dir: Path
+    _assets_path: str
     _clients: WeakSet[WebSocket]
     _watch_task: asyncio.Task | None
 
-    def __init__(self, root: str | Path = Path('static')):
-        if isinstance(root, str):
-            root = Path(root)
-        self._root = root
-        self._components = {}
-        self._layouts = {}
-        self._assets = defaultdict(set)
-        self._manifest = None
-        self._clients = WeakSet()
-        self._watch_task = None
+    def __new__(cls) -> "Registry":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._components = {}
+            cls._instance._layouts = {}
+            cls._instance._static_dir = Path('static')
+            cls._instance._bundle_dir = Path('dist/bundles')
+            cls._instance._assets_path = "/assets"
+            cls._instance._assets = defaultdict(set)
+            cls._instance._manifest = None
+            cls._clients = WeakSet()
+            cls._watch_task = None
+        return cls._instance
 
-    async def initialize(self, frozen: bool = False, watch: bool = False) -> None:
+    async def initialize(
+        self,
+        frozen: bool = False,
+        watch: bool = False,
+        static_dir: str | Path = Path('static'),
+        bundle_dir: str | Path = Path('dist/bundles'),
+        assets_path: str = "/assets",
+    ) -> None:
         """Configure the registry
 
         Args:
-            frozen: Load the manifest from disk and do not allow components to build assets
-            watch: In dev mode watch the static directory and rebuild manifest on changes
+            frozen: Load the manifest from disk and do not allow components to build assets: default False
+            watch: In dev mode watch the static directory and rebuild manifest on changes: default False
+            static_dir: Path to static files directory: default ('static')
+            bundle_dir: Path to bundled output files: default ('dist/bundles')
+            asset_path: URL root to expose bundled assets: default ('/assets')
         """
+        if isinstance(static_dir, str):
+            static_dir = Path(static_dir)
+        self._static_dir = static_dir
+        if isinstance(bundle_dir, str):
+            bundle_dir = Path(bundle_dir)
+        self._bundle_dir = bundle_dir
+        self._assets_path = assets_path
+        self._frozen = frozen
+        self._watch = watch
         self._load_manifest(frozen=frozen)
         if watch:
             await self._start_ws_watch()
 
     def _load_manifest(self, frozen: bool = False) -> None:
-        path = BUNDLE_DIR / "manifest.json"
+        path = self._bundle_dir / "manifest.json"
         try:
             self._manifest = Manifest.model_validate(
                 json.loads(path.read_text()) if path.exists() else {}
             )
         except Exception:
-            self._manifest = Manifest(components={}, bundles={})
+            self._manifest = Manifest(bundles={})
 
         if frozen:
             return
 
+        self._bundle_dir.mkdir(parents=True, exist_ok=True)
+
         for name, comp in self._components.items():
             if name.startswith('__mp_main__'):
                 continue
+            logger.info(f'add component to manifest {name}')
             self._manifest.add_component(comp)
+        self.save_manifest()
 
     async def _broadcast_reload(self):
         for ws in list(self._clients):
@@ -234,16 +265,21 @@ class Registry:
 
         logger.info(f"Starting watcher process on files in '{root}'")
         async for changes in awatch(root):
+            has_changes = False
             for _, changed_path in changes:
                 p = Path(changed_path).resolve()
                 for comp in self._assets.get(p, []):
+                    has_changes = True
                     logger.info(f"Rebuilding component: {comp.name}")
                     self._manifest.add_component(comp)
                     await self._broadcast_reload()
 
+            if has_changes:
+                self.save_manifest()
+
     async def _start_ws_watch(self):
         if self._watch_task is None:
-            self._watch_task = asyncio.create_task(self._watch_loop(self._root))
+            self._watch_task = asyncio.create_task(self._watch_loop(self._static_dir))
 
     def add_ws_client(self, ws: WebSocket) -> None:
         self._clients.add(ws)
@@ -284,18 +320,18 @@ class Registry:
         if self._manifest is None:
             self._load_manifest(frozen=False)
         assert self._manifest is not None
-        (BUNDLE_DIR / "manifest.json").write_text(self._manifest.model_dump_json(indent=2))
+        (self._bundle_dir / "manifest.json").write_text(self._manifest.model_dump_json(indent=2))
 
     def resolve(self, fn: Callable) -> Component | None:
         """Resolve a function to its registered component."""
         name = getattr(fn, "_htmpl_component", None) or getattr(fn, "_htmpl_layout", None)
         return self._components.get(name) if name else None
 
-    def clear(self) -> None:
-        self._components.clear()
-        self._layouts.clear()
-        self._assets.clear()
-        self._manifest = None
+    # def clear(self) -> None:
+    #     self._components.clear()
+    #     self._layouts.clear()
+    #     self._assets.clear()
+    #     self._manifest = None
 
 
 registry = Registry()
@@ -396,9 +432,6 @@ def layout(
     return decorator
 
 
-# --- Bundling ---
-
-
 def _hash(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:12]
 
@@ -427,9 +460,9 @@ def _bundle_with_esbuild(files: list[Path], outfile: Path, ext: str) -> bool:
             "--external:*.svg",
             "--external:*.woff",
             "--external:*.woff2",
+            "--minify",
+            "--sourcemap",
         ]
-        if MINIFY:
-            cmd.append("--minify")
         subprocess.run(cmd, check=True, capture_output=True)
         entry.unlink()
         return True
@@ -451,14 +484,12 @@ def create_bundle(files: set[str], ext: str) -> str | None:
     if not files:
         return None
 
-    BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
-
     prefix = {"css": "styles", "js": "scripts", "py": "pyscripts"}[ext]
 
     local_files: list[Path] = []
     file_names: list[str] = []
     for f in sorted(files):
-        p = Path(os.path.normpath(f.lstrip("/")))
+        p = Path(f)
         if p.exists():
             local_files.append(p)
             file_names.append(f"{p.name}-{p.stat().st_mtime}")
@@ -468,8 +499,8 @@ def create_bundle(files: set[str], ext: str) -> str | None:
 
     file_hash = _hash(":".join(file_names))
     filename = f"{prefix}-{file_hash}.{ext}"
-    path = BUNDLE_DIR / filename
-    final_path = f"/static/bundles/{filename}"
+    path = registry._bundle_dir / filename
+    final_path = f"{registry._assets_path}/{filename}"
 
     if path.exists():
         return final_path
@@ -487,22 +518,3 @@ def create_bundle(files: set[str], ext: str) -> str | None:
     logger.info(f"built with fallback in {elapsed_ms:.1f}ms")
     return final_path
 
-
-router = APIRouter()
-
-
-@router.websocket("/__hmr")
-async def hmr_websocket(ws: WebSocket):
-    if registry._watch_task is None:
-        return await ws.close(reason="HMR not enabled")
-
-    await ws.accept()
-    registry.add_ws_client(ws)
-    try:
-        while True:
-            await ws.receive_text()
-    except WebSocketDisconnect:
-        registry.remove_ws_client(ws)
-
-
-router.mount("/static", StaticFiles(directory=Path("static"), check_dir=False), name="static")

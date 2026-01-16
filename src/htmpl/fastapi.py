@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from typing import (
     Annotated,
     Any,
@@ -14,8 +15,17 @@ from typing import (
     get_args,
 )
 
-from fastapi import Depends, Request, Response
+from fastapi import (
+    APIRouter,
+    FastAPI,
+    Depends,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from .assets import (
@@ -29,9 +39,6 @@ from .forms import BaseForm, parse_form_errors
 
 
 T = TypeVar("T", bound=BaseForm)
-
-
-# --- Bundles Dependency ---
 
 
 async def use_bundles(request: Request) -> Bundles:
@@ -52,9 +59,6 @@ async def use_bundles(request: Request) -> Bundles:
     if not hasattr(request.state, "htmpl_collector"):
         request.state.htmpl_collector = AssetCollector()
     return Bundles(_collector=request.state.htmpl_collector)
-
-
-# --- Page Renderer ---
 
 
 class PageRenderer(Generic[T]):
@@ -118,9 +122,6 @@ class PageRenderer(Generic[T]):
         return RedirectResponse(url=str(self.request.url), status_code=303)
 
 
-# --- Form Parsing ---
-
-
 class ParsedForm(BaseModel, Generic[T]):
     data: T | None = None
     values: dict
@@ -148,9 +149,6 @@ async def parse_form(request: Request, form: type[T] | None) -> ParsedForm[T]:
     return ParsedForm(data=None, values={}, errors={})
 
 
-# --- Helpers ---
-
-
 def _is_depends(annotation) -> bool:
     """Get Depends from annotation if present."""
     if get_origin(annotation) is Annotated:
@@ -158,9 +156,6 @@ def _is_depends(annotation) -> bool:
             if type(meta).__name__ == "Depends":
                 return True
     return False
-
-
-# --- use_layout Dependency ---
 
 
 def use_layout(
@@ -238,9 +233,6 @@ def use_layout(
     return Depends(setup)
 
 
-# --- Component Injection ---
-
-
 def use_component(
     component: ComponentFunc,
     **fixed_kwargs: Any,
@@ -300,3 +292,31 @@ def use_component(
     render.__name__ = comp_name
 
     return Depends(render)
+
+
+def add_assets_routes(
+    app: FastAPI, assets_path: str = "/assets", bundle_dir: str = "dist/bundles"
+) -> FastAPI:
+    router = APIRouter()
+
+    @router.websocket("/__hmr")
+    async def hmr_websocket(ws: WebSocket):
+        if registry._watch_task is None:
+            return await ws.close(reason="HMR not enabled")
+
+        await ws.accept()
+        registry.add_ws_client(ws)
+        try:
+            while True:
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            registry.remove_ws_client(ws)
+
+    app.include_router(router)
+    app.mount(
+        assets_path,
+        StaticFiles(directory=Path(bundle_dir), check_dir=False),
+        name="assets",
+    )
+
+    return app

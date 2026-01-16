@@ -2,6 +2,8 @@
 
 from typing import Annotated
 
+import tempfile
+from pathlib import Path
 from fastapi.responses import HTMLResponse
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, Request
@@ -22,25 +24,50 @@ from htmpl.assets import (
 from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles
 
 
-# --- Test Fixtures: Components & Layouts ---
+@pytest.fixture(scope="function")
+async def setup_registry():
+    with tempfile.TemporaryDirectory() as tempy:
+        temp = Path(tempy)
+        dist_dir = temp / "dist"
+        dist_dir.mkdir()
+        static_dir = temp / "static"
+        static_dir.mkdir()
+        button_css = static_dir / "button.css"
+        button_css.write_text("button")
+        card_css = static_dir / "card.css"
+        card_css.write_text("card")
+        card_js = static_dir / "card.js"
+        card_js.write_text("card.js")
+        nav_css = static_dir / "nav.css"
+        nav_css.write_text("nav")
+        app_css = static_dir / "app.css"
+        app_css.write_text("app")
+        await registry.initialize(frozen=False, watch=False, static_dir=static_dir, bundle_dir=dist_dir)
+        for f in temp.iterdir():
+            print(f)
+            if f.is_dir():
+                for r in f.iterdir():
+                    print(r)
+
+        return temp
 
 
-@component(css={"static/css/button.css"})
+@component(css={"button.css"})
 async def Button(label: str):
     return await html(t"<button class='btn'>{label}</button>")
 
 
-@component(css={"static/css/card.css"}, js={"static/js/card.js"})
+@component(css={"card.css"}, js={"card.js"})
 async def Card(title: str, body: SafeHTML):
     return await html(t"<div class='card'><h3>{title}</h3>{body}</div>")
 
 
-@component(css={"static/css/nav.css"})
+@component(css={"nav.css"})
 async def NavBar(user: str = "Guest"):
     return await html(t"<nav>Welcome, {user}</nav>")
 
 
-@layout(css={"static/css/app.css"}, title="Page", body_class="")
+@layout(css={"app.css"}, title="Page", body_class="")
 async def AppLayout(
     content: SafeHTML,
     bundles: Annotated[Bundles, Depends(use_bundles)],
@@ -53,7 +80,7 @@ async def AppLayout(
         <html>
         <head>
             <title>{title}</title>
-            {await bundles.head()}
+            {bundles.head}
         </head>
         <body class="{body_class}">
             {nav}
@@ -87,19 +114,16 @@ class TestAssetCollector:
         assert resolved.css == []
         assert resolved.js == []
 
-    def test_add_component_assets(self):
-        collector = AssetCollector()
-        comp = registry.get_component(qualified_name(Button))
-        collector.add(comp)
-        assert "static/css/button.css" in collector.css
-
-    def test_add_by_name(self):
+    def test_add_by_name(self, setup_registry):
+        print(registry.components)
+        print(registry._manifest)
         collector = AssetCollector()
         collector.add_by_name(qualified_name(Card))
-        assert "static/css/card.css" in collector.css
-        assert "static/js/card.js" in collector.js
+        assert "static/card.css" in collector.css
+        assert "static/card.js" in collector.js
 
-    def test_deduplication(self):
+    async def test_deduplication(self):
+        await registry.initialize(frozen=True)
         collector = AssetCollector()
         collector.add_by_name(qualified_name(Button))
         collector.add_by_name(qualified_name(Button))
