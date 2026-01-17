@@ -227,7 +227,6 @@ class TestHtmxComponents:
         assert 'hx-swap-oob="outerHTML"' in result.content
 
 
-
 class TestHtmxRequestHelpers:
     @pytest.fixture
     def app(self):

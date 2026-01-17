@@ -35,9 +35,7 @@ class FullForm(BaseForm):
     name: str = Field(title="Full Name", description="Enter your name")
     email: EmailStr = Field(title="Email Address")
     password: str = Field(min_length=8)
-    bio: str = Field(
-        default="", json_schema_extra={"form_widget": "textarea", "rows": 6}
-    )
+    bio: str = Field(default="", json_schema_extra={"form_widget": "textarea", "rows": 6})
     role: Literal["admin", "user", "guest"] = Field(default="user")
     agree: bool = Field(default=False, title="I agree to terms")
 

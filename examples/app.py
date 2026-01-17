@@ -7,15 +7,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Callable
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr
 
-from htmpl import html, SafeHTML, raw
-from htmpl.assets import Bundles, component, layout, save_manifest, registry
+from htmpl import html, SafeHTML, render_html
+from htmpl.assets import Bundles, component, layout, registry
 from htmpl.elements import (
     section,
     div,
@@ -42,7 +42,7 @@ from htmpl.elements import (
     input_,
 )
 from htmpl.forms import BaseForm
-from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles
+from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles, add_assets_routes
 from htmpl.htmx import is_htmx
 
 
@@ -132,11 +132,15 @@ def LeaderboardRow(user: User, rank: int):
     )
 
 
-def LeaderboardTable(users: list[User]):
-    return table(
-        thead(tr(th("#"), th("User"), th("Commits"), th("Points"))),
-        tbody([LeaderboardRow(u, i + 1) for i, u in enumerate(users)], id="leaderboard-body"),
-    )
+@component(css={"/static/css/foo.css"})
+async def LeaderBoardTable():
+    def _lb(users: list[User]):
+        return table(
+            thead(tr(th("#"), th("User"), th("Commits"), th("Points"))),
+            tbody([LeaderboardRow(u, i + 1) for i, u in enumerate(users)], id="leaderboard-body"),
+        )
+
+    return _lb
 
 
 def CommitCard(message: str, repo: str, points: int, timestamp: str):
@@ -151,7 +155,11 @@ def RepoRow(name: str, active: bool, commits: int):
     status = "✓ Active" if active else "Inactive"
     return tr(
         td(a(name, href=f"https://github.com/{name}")),
-        td(button(status, class_="outline", hx_post=f"/api/repos/{name}/toggle", hx_swap="outerHTML")),
+        td(
+            button(
+                status, class_="outline", hx_post=f"/api/repos/{name}/toggle", hx_swap="outerHTML"
+            )
+        ),
         td(str(commits)),
     )
 
@@ -168,16 +176,20 @@ def ButtonLink(text: str, href: str, *, variant: str = "primary"):
     return a(text, href=href, role="button", class_=cls)
 
 
-def SearchInput(name: str, *, src: str, target: str, placeholder: str = "Search..."):
-    return input_(
-        type="search",
-        name=name,
-        placeholder=placeholder,
-        hx_get=src,
-        hx_target=target,
-        hx_trigger="input changed delay:300ms, search",
-        hx_swap="innerHTML",
-    )
+@component(css={"/static/css/foo.css"})
+async def SearchInput() -> Callable:
+    def search_inpt(name: str, *, src: str, target: str, placeholder: str = "Search..."):
+        return input_(
+            type="search",
+            name=name,
+            placeholder=placeholder,
+            hx_get=src,
+            hx_target=target,
+            hx_trigger="input changed delay:300ms, search",
+            hx_swap="innerHTML",
+        )
+
+    return search_inpt
 
 
 def LazyLoad(src: str, *, placeholder=None):
@@ -226,28 +238,31 @@ async def AppPage(
     navbar: Annotated[SafeHTML, use_component(AppNav)],
     title: str,
 ):
-    return await html(t'''<!DOCTYPE html>
+    return await html(t"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{title}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    {await bundles.head()}
+    {bundles.head}
 </head>
 <body>
     {navbar}
     <main class="container">{content}</main>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 </body>
-</html>''')
+</html>""")
 
 
 # Routes
 
 
 @router.get("/")
-async def home(page: Annotated[PageRenderer, use_layout(AppPage)]):
+async def home(
+    page: Annotated[PageRenderer, use_layout(AppPage)],
+    lb: Annotated[Callable, use_component(LeaderBoardTable)],
+):
     stats = await get_stats()
     leaderboard = await get_leaderboard()
 
@@ -264,7 +279,7 @@ async def home(page: Annotated[PageRenderer, use_layout(AppPage)]):
             ),
             section(
                 h2("Leaderboard"),
-                LeaderboardTable(leaderboard[:10]),
+                lb(leaderboard[:10]),
                 ButtonLink("View Full Leaderboard", "/board", variant="secondary"),
                 class_="mt-1",
             ),
@@ -277,20 +292,23 @@ async def home(page: Annotated[PageRenderer, use_layout(AppPage)]):
 async def leaderboard(
     request: Request,
     page: Annotated[PageRenderer, use_layout(AppPage)],
+    search_input: Annotated[Callable, use_component(SearchInput)],
+    lb: Annotated[Callable, use_component(LeaderBoardTable)],
     q: str = "",
 ):
     users = await get_leaderboard(q)
 
     # HTMX partial - just the rows
     if is_htmx(request):
-        rows = fragment(*[LeaderboardRow(u, i + 1) for i, u in enumerate(users)])
-        return HTMLResponse(await rows.__html__())
+        return await render_html(fragment(*[LeaderboardRow(u, i + 1) for i, u in enumerate(users)]))
 
     return await page(
         fragment(
             h1("Leaderboard"),
-            SearchInput("q", src="/board", target="#leaderboard-body", placeholder="Search users..."),
-            LeaderboardTable(users),
+            search_input(
+                "q", src="/board", target="#leaderboard-body", placeholder="Search users..."
+            ),
+            lb(users),
         ),
         title="Leaderboard",
     )
@@ -346,7 +364,9 @@ class SettingsForm(BaseForm):
     username: str = Field(description="Your display name")
     email: EmailStr
     frank: str
-    email_digest: bool = Field(default=False, json_schema_extra={"form_widget": "checkbox", "role": "switch"})
+    email_digest: bool = Field(
+        default=False, json_schema_extra={"form_widget": "checkbox", "role": "switch"}
+    )
     notify_mentions: bool
 
 
@@ -379,17 +399,26 @@ async def settings_post(
 
 # App setup
 
-app = FastAPI(debug=True)
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await registry.initialize(watch=True)
+    registry.save_manifest()
+    yield
+    await registry.teardown()
+
+
+app = FastAPI(debug=True, lifespan=lifespan)
 app.include_router(router)
-app.mount("/static", StaticFiles(directory=Path("static"), check_dir=False), name="static")
+add_assets_routes(app)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
-logger.info(f"Layouts: {list(registry.layouts.keys())}")
-logger.info(f"Components: {list(registry.components.keys())}")
-save_manifest()
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

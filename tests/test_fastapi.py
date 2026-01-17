@@ -1,7 +1,10 @@
 """Tests for htmpl FastAPI integration."""
 
+import re
 from typing import Annotated
 
+import tempfile
+from pathlib import Path
 from fastapi.responses import HTMLResponse
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, Request
@@ -22,25 +25,66 @@ from htmpl.assets import (
 from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles
 
 
-# --- Test Fixtures: Components & Layouts ---
+@pytest.fixture(scope="function")
+async def setup_registry():
+    with tempfile.TemporaryDirectory() as tempy:
+        temp = Path(tempy)
+        dist_dir = temp / "dist"
+        dist_dir.mkdir()
+        static_dir = temp / "static"
+        static_dir.mkdir()
+        button_css = static_dir / "button.css"
+        button_css.write_text("button")
+        card_css = static_dir / "card.css"
+        card_css.write_text("card")
+        card_js = static_dir / "card.js"
+        card_js.write_text("card.js")
+        nav_js = static_dir / "nav.js"
+        nav_js.write_text("nav")
+        nav_py = static_dir / "nav.py"
+        nav_py.write_text("nav")
+        app_css = static_dir / "app.css"
+        app_css.write_text("app")
+        await registry.initialize(
+            frozen=False, watch=True, static_dir=static_dir, bundle_dir=dist_dir
+        )
+        yield tempy
+
+    await registry.teardown()
 
 
-@component(css={"static/css/button.css"})
+@pytest.fixture(scope="function")
+async def prod_registry():
+    with tempfile.TemporaryDirectory() as tempy:
+        temp = Path(tempy)
+        dist_dir = temp / "dist"
+        dist_dir.mkdir()
+        static_dir = temp / "static"
+        static_dir.mkdir()
+        await registry.initialize(
+            frozen=True, watch=False, static_dir=static_dir, bundle_dir=dist_dir
+        )
+        yield
+
+    await registry.teardown()
+
+
+@component(css={"button.css"})
 async def Button(label: str):
     return await html(t"<button class='btn'>{label}</button>")
 
 
-@component(css={"static/css/card.css"}, js={"static/js/card.js"})
+@component(css={"card.css"}, js={"card.js"})
 async def Card(title: str, body: SafeHTML):
     return await html(t"<div class='card'><h3>{title}</h3>{body}</div>")
 
 
-@component(css={"static/css/nav.css"})
+@component(js={"nav.js"}, py={"nav.py"})
 async def NavBar(user: str = "Guest"):
     return await html(t"<nav>Welcome, {user}</nav>")
 
 
-@layout(css={"static/css/app.css"}, title="Page", body_class="")
+@layout(css={"app.css"}, title="Page", body_class="")
 async def AppLayout(
     content: SafeHTML,
     bundles: Annotated[Bundles, Depends(use_bundles)],
@@ -53,7 +97,7 @@ async def AppLayout(
         <html>
         <head>
             <title>{title}</title>
-            {await bundles.head()}
+            {bundles.head}
         </head>
         <body class="{body_class}">
             {nav}
@@ -68,7 +112,7 @@ async def MinimalLayout(
     content: SafeHTML,
     bundles: Annotated[Bundles, Depends(use_bundles)],
 ):
-    return await html(t"<div class='minimal'>{content}</div>")
+    return await html(t"<head>{bundles.head}</head><div class='minimal'>{content}</div>")
 
 
 # --- Tests ---
@@ -81,29 +125,33 @@ class TestQualifiedName:
 
 
 class TestAssetCollector:
-    def test_empty_collector(self):
+    def assert_matches(self, collection, pattern: str):
+        """Assert all items in collection match the regex pattern."""
+        regex = re.compile(pattern)
+        for item in collection:
+            assert regex.match(item), f"'{item}' does not match pattern '{pattern}'"
+
+    async def test_empty_collector(self, setup_registry):
         collector = AssetCollector()
         resolved = collector.bundles()
         assert resolved.css == []
         assert resolved.js == []
 
-    def test_add_component_assets(self):
-        collector = AssetCollector()
-        comp = registry.get_component(qualified_name(Button))
-        collector.add(comp)
-        assert "static/css/button.css" in collector.css
-
-    def test_add_by_name(self):
+    async def test_add_by_name(self, setup_registry):
+        # await registry.initialize()
         collector = AssetCollector()
         collector.add_by_name(qualified_name(Card))
-        assert "static/css/card.css" in collector.css
-        assert "static/js/card.js" in collector.js
+        assert len(collector.css) == 1
+        assert len(collector.js) == 1
+        self.assert_matches(collector.css, r"/assets/styles-[a-f0-9]+\.css$")
+        self.assert_matches(collector.js, r"/assets/scripts-[a-f0-9]+\.js$")
 
-    def test_deduplication(self):
+    async def test_deduplication(self, setup_registry):
         collector = AssetCollector()
         collector.add_by_name(qualified_name(Button))
         collector.add_by_name(qualified_name(Button))
-        assert collector.css == {"static/css/button.css"}
+        assert len(collector.css) == 1
+        self.assert_matches(collector.css, r"/assets/styles-[a-f0-9]+\.css$")
 
 
 class TestRouter:
@@ -144,6 +192,10 @@ class TestRouter:
     def client(self, app):
         return TestClient(app)
 
+    @pytest.fixture(autouse=True)
+    def setup(self, setup_registry):
+        pass
+
     def test_layout_renders(self, client):
         response = client.get("/")
         assert response.status_code == 200
@@ -162,7 +214,7 @@ class TestRouter:
         assert "<title>User: Bob</title>" in response.text
         assert "<p>Hello, Bob!</p>" in response.text
 
-    def test_minimal_layout(self, client):
+    def test_minimal_layout(self, client, prod_registry):
         response = client.get("/minimal")
         assert response.status_code == 200
         assert "<div class='minimal'>" in response.text
@@ -225,6 +277,7 @@ class TestFormRouter:
         ):
             if page.errors:
                 return await page.form_error(login_template)
+            assert page.data is not None
             return await page(section(h1(f"Welcome, {page.data.email}!")))
 
         @router.get("/signup")
@@ -233,10 +286,13 @@ class TestFormRouter:
 
         @router.post("/signup")
         async def signup(
-            page: Annotated[PageRenderer[SignupSchema], use_layout(MinimalLayout, form=SignupSchema)],
+            page: Annotated[
+                PageRenderer[SignupSchema], use_layout(MinimalLayout, form=SignupSchema)
+            ],
         ):
             if page.errors:
                 return await page.form_error(signup_template)
+            assert page.data is not None
             return await page(section(h1(f"Account created for {page.data.username}!")))
 
         app.include_router(router)
@@ -245,6 +301,10 @@ class TestFormRouter:
     @pytest.fixture
     def client(self, app):
         return TestClient(app)
+
+    @pytest.fixture(autouse=True)
+    def setup(self, setup_registry):
+        pass
 
     def test_form_get_renders(self, client):
         response = client.get("/login")
@@ -279,7 +339,7 @@ class TestFormRouter:
 
 class TestPageRenderer:
     @pytest.fixture
-    def app(self):
+    def app(self, setup_registry):
         app = FastAPI()
         router = APIRouter()
 
@@ -334,7 +394,7 @@ class TestAssetIntegration:
     """Integration tests for asset collection through the request cycle."""
 
     @pytest.fixture
-    def app(self):
+    def app(self, setup_registry):
         app = FastAPI()
         router = APIRouter()
 
@@ -373,7 +433,7 @@ class TestIntegration:
     """Integration tests with raw render_html usage."""
 
     @pytest.fixture
-    def app(self):
+    def app(self, setup_registry):
         app = FastAPI()
         router = APIRouter()
 
@@ -393,7 +453,9 @@ class TestIntegration:
         async def partial(request: Request) -> HTMLResponse:
             if is_htmx(request):
                 return await render_html(t"<p>Partial loaded!</p>")
-            return await render_html(t"<!DOCTYPE html><html><body><p>Partial loaded!</p></body></html>")
+            return await render_html(
+                t"<!DOCTYPE html><html><body><p>Partial loaded!</p></body></html>"
+            )
 
         @router.get("/users")
         async def users(q: str = "") -> HTMLResponse:

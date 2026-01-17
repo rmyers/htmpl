@@ -119,9 +119,7 @@ def _infer_input_type(python_type: type, field_name: str) -> str:
     return "text"
 
 
-def _extract_field_config(
-    name: str, annotation: type, field_info: FieldInfo
-) -> FieldConfig:
+def _extract_field_config(name: str, annotation: type, field_info: FieldInfo) -> FieldConfig:
     """Extract FieldConfig from Pydantic field."""
     origin = get_origin(annotation)
     if origin is type(None) or str(origin) == "typing.Union":
@@ -166,9 +164,7 @@ def _extract_field_config(
     if input_type == "checkbox":
         widget = "checkbox"
 
-    required = (
-        field_info.default is PydanticUndefined and field_info.default_factory is None
-    )
+    required = field_info.default is PydanticUndefined and field_info.default_factory is None
 
     placeholder: str = ""
     if field_info.examples:
@@ -300,9 +296,7 @@ class BaseForm(BaseModel):
         return label(cfg.label, for_=name)
 
     @classmethod
-    def error_for(
-        cls, name: str, errors: dict[str, str] | None = None
-    ) -> Element | None:
+    def error_for(cls, name: str, errors: dict[str, str] | None = None) -> Element | None:
         """Render error message for a field if present."""
         if not errors or name not in errors:
             return None
@@ -318,9 +312,7 @@ class BaseForm(BaseModel):
         """Render multiple fields as a list."""
         values = values or {}
         errors = errors or {}
-        return [
-            cls.render_field(name, values.get(name), errors.get(name)) for name in names
-        ]
+        return [cls.render_field(name, values.get(name), errors.get(name)) for name in names]
 
     @classmethod
     def inline(
@@ -366,9 +358,7 @@ class BaseForm(BaseModel):
             case "checkbox":
                 return cls._render_checkbox_input(cfg, value, error, extra_attrs)
             case "hidden":
-                return input_(
-                    type="hidden", name=cfg.name, value=str(value or ""), **extra_attrs
-                )
+                return input_(type="hidden", name=cfg.name, value=str(value or ""), **extra_attrs)
             case _:
                 return cls._render_input_element(cfg, value, error, extra_attrs)
 
@@ -422,9 +412,7 @@ class BaseForm(BaseModel):
         }
         if error:
             attrs["aria-invalid"] = "true"
-        return textarea(
-            str(value or ""), **{k: v for k, v in attrs.items() if v is not None}
-        )
+        return textarea(str(value or ""), **{k: v for k, v in attrs.items() if v is not None})
 
     @classmethod
     def _render_select_input(
@@ -449,9 +437,7 @@ class BaseForm(BaseModel):
         if error:
             attrs["aria-invalid"] = "true"
         return select(
-            option(
-                "Select...", value="", disabled=True, selected=(not str_value) or None
-            ),
+            option("Select...", value="", disabled=True, selected=(not str_value) or None),
             *options,
             **{k: v for k, v in attrs.items() if v is not None},
         )
@@ -502,9 +488,7 @@ class BaseForm(BaseModel):
         )
 
     @classmethod
-    def _render_textarea(
-        cls, cfg: FieldConfig, value: Any, error: str | None
-    ) -> Element:
+    def _render_textarea(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
         return label(
             cfg.label,
             cls._render_textarea_input(cfg, value, error, {}),
@@ -522,9 +506,7 @@ class BaseForm(BaseModel):
         )
 
     @classmethod
-    def _render_checkbox(
-        cls, cfg: FieldConfig, value: Any, error: str | None
-    ) -> Element:
+    def _render_checkbox(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
         return label(
             cls._render_checkbox_input(cfg, value, error, {}),
             cfg.label,
