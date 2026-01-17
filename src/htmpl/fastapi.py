@@ -193,9 +193,7 @@ def use_layout(
     # First param is content, skip it
     # Collect FastAPI dependencies
     fastapi_params = [
-        inspect.Parameter(
-            "request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request
-        )
+        inspect.Parameter("request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request)
     ]
 
     for pname, p in params_list[1:]:  # Skip content param
@@ -266,9 +264,7 @@ def use_component(
 
     # Build params: Request first, then component's params (minus fixed)
     params = [
-        inspect.Parameter(
-            "request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request
-        )
+        inspect.Parameter("request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request)
     ]
     for pname, p in sig.parameters.items():
         if pname in fixed_kwargs:

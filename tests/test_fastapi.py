@@ -25,7 +25,7 @@ from htmpl.assets import (
 from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles
 
 
-@pytest.fixture(scope="function", autouse=True)
+@pytest.fixture(scope="function")
 async def setup_registry():
     with tempfile.TemporaryDirectory() as tempy:
         temp = Path(tempy)
@@ -39,18 +39,34 @@ async def setup_registry():
         card_css.write_text("card")
         card_js = static_dir / "card.js"
         card_js.write_text("card.js")
-        nav_css = static_dir / "nav.css"
-        nav_css.write_text("nav")
+        nav_js = static_dir / "nav.js"
+        nav_js.write_text("nav")
+        nav_py = static_dir / "nav.py"
+        nav_py.write_text("nav")
         app_css = static_dir / "app.css"
         app_css.write_text("app")
-        await registry.initialize(frozen=False, watch=False, static_dir=static_dir, bundle_dir=dist_dir)
-        for f in temp.iterdir():
-            print(f)
-            if f.is_dir():
-                for r in f.iterdir():
-                    print(r)
+        await registry.initialize(
+            frozen=False, watch=True, static_dir=static_dir, bundle_dir=dist_dir
+        )
+        yield tempy
 
-        return temp
+    await registry.teardown()
+
+
+@pytest.fixture(scope="function")
+async def prod_registry():
+    with tempfile.TemporaryDirectory() as tempy:
+        temp = Path(tempy)
+        dist_dir = temp / "dist"
+        dist_dir.mkdir()
+        static_dir = temp / "static"
+        static_dir.mkdir()
+        await registry.initialize(
+            frozen=True, watch=False, static_dir=static_dir, bundle_dir=dist_dir
+        )
+        yield
+
+    await registry.teardown()
 
 
 @component(css={"button.css"})
@@ -63,7 +79,7 @@ async def Card(title: str, body: SafeHTML):
     return await html(t"<div class='card'><h3>{title}</h3>{body}</div>")
 
 
-@component(css={"nav.css"})
+@component(js={"nav.js"}, py={"nav.py"})
 async def NavBar(user: str = "Guest"):
     return await html(t"<nav>Welcome, {user}</nav>")
 
@@ -96,7 +112,7 @@ async def MinimalLayout(
     content: SafeHTML,
     bundles: Annotated[Bundles, Depends(use_bundles)],
 ):
-    return await html(t"<div class='minimal'>{content}</div>")
+    return await html(t"<head>{bundles.head}</head><div class='minimal'>{content}</div>")
 
 
 # --- Tests ---
@@ -109,33 +125,33 @@ class TestQualifiedName:
 
 
 class TestAssetCollector:
-
     def assert_matches(self, collection, pattern: str):
         """Assert all items in collection match the regex pattern."""
         regex = re.compile(pattern)
         for item in collection:
             assert regex.match(item), f"'{item}' does not match pattern '{pattern}'"
 
-    def test_empty_collector(self):
+    async def test_empty_collector(self, setup_registry):
         collector = AssetCollector()
         resolved = collector.bundles()
         assert resolved.css == []
         assert resolved.js == []
 
-    def test_add_by_name(self):
+    async def test_add_by_name(self, setup_registry):
+        # await registry.initialize()
         collector = AssetCollector()
         collector.add_by_name(qualified_name(Card))
         assert len(collector.css) == 1
         assert len(collector.js) == 1
-        self.assert_matches(collector.css, r'/assets/styles-[a-f0-9]+\.css$')
-        self.assert_matches(collector.js, r'/assets/scripts-[a-f0-9]+\.js$')
+        self.assert_matches(collector.css, r"/assets/styles-[a-f0-9]+\.css$")
+        self.assert_matches(collector.js, r"/assets/scripts-[a-f0-9]+\.js$")
 
-    async def test_deduplication(self):
+    async def test_deduplication(self, setup_registry):
         collector = AssetCollector()
         collector.add_by_name(qualified_name(Button))
         collector.add_by_name(qualified_name(Button))
         assert len(collector.css) == 1
-        self.assert_matches(collector.css, r'/assets/styles-[a-f0-9]+\.css$')
+        self.assert_matches(collector.css, r"/assets/styles-[a-f0-9]+\.css$")
 
 
 class TestRouter:
@@ -176,6 +192,10 @@ class TestRouter:
     def client(self, app):
         return TestClient(app)
 
+    @pytest.fixture(autouse=True)
+    def setup(self, setup_registry):
+        pass
+
     def test_layout_renders(self, client):
         response = client.get("/")
         assert response.status_code == 200
@@ -194,7 +214,7 @@ class TestRouter:
         assert "<title>User: Bob</title>" in response.text
         assert "<p>Hello, Bob!</p>" in response.text
 
-    def test_minimal_layout(self, client):
+    def test_minimal_layout(self, client, prod_registry):
         response = client.get("/minimal")
         assert response.status_code == 200
         assert "<div class='minimal'>" in response.text
@@ -257,6 +277,7 @@ class TestFormRouter:
         ):
             if page.errors:
                 return await page.form_error(login_template)
+            assert page.data is not None
             return await page(section(h1(f"Welcome, {page.data.email}!")))
 
         @router.get("/signup")
@@ -265,10 +286,13 @@ class TestFormRouter:
 
         @router.post("/signup")
         async def signup(
-            page: Annotated[PageRenderer[SignupSchema], use_layout(MinimalLayout, form=SignupSchema)],
+            page: Annotated[
+                PageRenderer[SignupSchema], use_layout(MinimalLayout, form=SignupSchema)
+            ],
         ):
             if page.errors:
                 return await page.form_error(signup_template)
+            assert page.data is not None
             return await page(section(h1(f"Account created for {page.data.username}!")))
 
         app.include_router(router)
@@ -277,6 +301,10 @@ class TestFormRouter:
     @pytest.fixture
     def client(self, app):
         return TestClient(app)
+
+    @pytest.fixture(autouse=True)
+    def setup(self, setup_registry):
+        pass
 
     def test_form_get_renders(self, client):
         response = client.get("/login")
@@ -311,7 +339,7 @@ class TestFormRouter:
 
 class TestPageRenderer:
     @pytest.fixture
-    def app(self):
+    def app(self, setup_registry):
         app = FastAPI()
         router = APIRouter()
 
@@ -366,7 +394,7 @@ class TestAssetIntegration:
     """Integration tests for asset collection through the request cycle."""
 
     @pytest.fixture
-    def app(self):
+    def app(self, setup_registry):
         app = FastAPI()
         router = APIRouter()
 
@@ -405,7 +433,7 @@ class TestIntegration:
     """Integration tests with raw render_html usage."""
 
     @pytest.fixture
-    def app(self):
+    def app(self, setup_registry):
         app = FastAPI()
         router = APIRouter()
 
@@ -425,7 +453,9 @@ class TestIntegration:
         async def partial(request: Request) -> HTMLResponse:
             if is_htmx(request):
                 return await render_html(t"<p>Partial loaded!</p>")
-            return await render_html(t"<!DOCTYPE html><html><body><p>Partial loaded!</p></body></html>")
+            return await render_html(
+                t"<!DOCTYPE html><html><body><p>Partial loaded!</p></body></html>"
+            )
 
         @router.get("/users")
         async def users(q: str = "") -> HTMLResponse:

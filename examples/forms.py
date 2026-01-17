@@ -145,7 +145,9 @@ async def login_template(form_class: type[LoginForm], values: dict, errors: dict
 async def contact_template(form_class: type[ContactForm], values: dict, errors: dict):
     return section(
         h1("Contact Us"),
-        form_class.render(action="/contact", values=values, errors=errors, submit_text="Send Message"),
+        form_class.render(
+            action="/contact", values=values, errors=errors, submit_text="Send Message"
+        ),
     )
 
 
@@ -246,4 +248,5 @@ app.include_router(router)
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("forms:app", host="0.0.0.0", port=8000, reload=True)

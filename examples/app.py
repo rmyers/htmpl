@@ -132,13 +132,14 @@ def LeaderboardRow(user: User, rank: int):
     )
 
 
-@component(css={'/static/css/foo.css'})
+@component(css={"/static/css/foo.css"})
 async def LeaderBoardTable():
     def _lb(users: list[User]):
         return table(
             thead(tr(th("#"), th("User"), th("Commits"), th("Points"))),
             tbody([LeaderboardRow(u, i + 1) for i, u in enumerate(users)], id="leaderboard-body"),
         )
+
     return _lb
 
 
@@ -154,7 +155,11 @@ def RepoRow(name: str, active: bool, commits: int):
     status = "✓ Active" if active else "Inactive"
     return tr(
         td(a(name, href=f"https://github.com/{name}")),
-        td(button(status, class_="outline", hx_post=f"/api/repos/{name}/toggle", hx_swap="outerHTML")),
+        td(
+            button(
+                status, class_="outline", hx_post=f"/api/repos/{name}/toggle", hx_swap="outerHTML"
+            )
+        ),
         td(str(commits)),
     )
 
@@ -183,6 +188,7 @@ async def SearchInput() -> Callable:
             hx_trigger="input changed delay:300ms, search",
             hx_swap="innerHTML",
         )
+
     return search_inpt
 
 
@@ -232,7 +238,7 @@ async def AppPage(
     navbar: Annotated[SafeHTML, use_component(AppNav)],
     title: str,
 ):
-    return await html(t'''<!DOCTYPE html>
+    return await html(t"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
@@ -246,14 +252,17 @@ async def AppPage(
     <main class="container">{content}</main>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 </body>
-</html>''')
+</html>""")
 
 
 # Routes
 
 
 @router.get("/")
-async def home(page: Annotated[PageRenderer, use_layout(AppPage)], lb: Annotated[Callable, use_component(LeaderBoardTable)]):
+async def home(
+    page: Annotated[PageRenderer, use_layout(AppPage)],
+    lb: Annotated[Callable, use_component(LeaderBoardTable)],
+):
     stats = await get_stats()
     leaderboard = await get_leaderboard()
 
@@ -296,7 +305,9 @@ async def leaderboard(
     return await page(
         fragment(
             h1("Leaderboard"),
-            search_input("q", src="/board", target="#leaderboard-body", placeholder="Search users..."),
+            search_input(
+                "q", src="/board", target="#leaderboard-body", placeholder="Search users..."
+            ),
             lb(users),
         ),
         title="Leaderboard",
@@ -353,7 +364,9 @@ class SettingsForm(BaseForm):
     username: str = Field(description="Your display name")
     email: EmailStr
     frank: str
-    email_digest: bool = Field(default=False, json_schema_extra={"form_widget": "checkbox", "role": "switch"})
+    email_digest: bool = Field(
+        default=False, json_schema_extra={"form_widget": "checkbox", "role": "switch"}
+    )
     notify_mentions: bool
 
 
@@ -388,12 +401,14 @@ async def settings_post(
 
 from contextlib import asynccontextmanager
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await registry.initialize(watch=True)
     registry.save_manifest()
     yield
     await registry.teardown()
+
 
 app = FastAPI(debug=True, lifespan=lifespan)
 app.include_router(router)
@@ -405,4 +420,5 @@ logger = logging.getLogger()
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

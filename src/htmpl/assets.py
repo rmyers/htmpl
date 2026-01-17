@@ -25,11 +25,13 @@ ESBUILD = shutil.which("esbuild")
 
 logger = logging.getLogger(__name__)
 
-AssetType = Literal['css', 'js', 'py']
+AssetType = Literal["css", "js", "py"]
 componentName = str
+
 
 class ManifestNotConfigured(Exception):
     pass
+
 
 def qualified_name(fn: Callable) -> str:
     """Get fully qualified name for a function."""
@@ -45,17 +47,23 @@ class ComponentFunc(Protocol):
     def __call__(self, *args, **kwargs) -> Awaitable[SafeHTML]: ...
 
 
-ALLOWED_EXTENSIONS = {'.css', '.js', '.ts', '.py'}
+class LayoutRenderer(Protocol):
+    """Protocol for layout render functions."""
 
-def safe_path(path: str) -> Path | None:
-    root = registry.static_dir
-    rel = Path(path.lstrip('/'))
+    def __call__(self, content: SafeHTML, bundles: Bundles, **kwargs) -> Awaitable[SafeHTML]: ...
+
+
+ALLOWED_EXTENSIONS = {".css", ".js", ".ts", ".py"}
+
+
+def safe_path(path: str, root: Path) -> Path | None:
+    rel = Path(path.lstrip("/"))
 
     # Explicit blocklist checks
-    if '..' in rel.parts:
+    if ".." in rel.parts:
         logger.warning(f"Attempting to use relative paths {rel}")
         return None
-    if any(part.startswith('.') for part in rel.parts):
+    if any(part.startswith(".") for part in rel.parts):
         logger.warning(f"Attempting to use hidden files {rel}")
         return None  # No hidden files
     if rel.suffix.lower() not in ALLOWED_EXTENSIONS:
@@ -86,6 +94,7 @@ def safe_path(path: str) -> Path | None:
         return None
     return resolved
 
+
 @dataclass
 class Component:
     """Component definition with its assets."""
@@ -98,39 +107,43 @@ class Component:
     def __hash__(self):
         return hash(self.name)
 
-    @property
-    def path_set(self) -> dict[AssetType, list[Path]]:
+    def path_set(self, root: Path) -> dict[AssetType, list[Path]]:
         return {
-            'css': list(filter(None, [safe_path(c) for c in self.css])),
-            'js': list(filter(None, [safe_path(j) for j in self.js])),
-            'py': list(filter(None, [safe_path(p) for p in self.py])),
+            "css": list(filter(None, [safe_path(c, root) for c in self.css])),
+            "js": list(filter(None, [safe_path(j, root) for j in self.js])),
+            "py": list(filter(None, [safe_path(p, root) for p in self.py])),
         }
 
-    @property
-    def file_set(self) -> dict[AssetType, list[str] | None]:
-        _path_set = self.path_set
+    def file_set(self, root: Path) -> dict[AssetType, list[str] | None]:
+        _path_set = self.path_set(root)
         return {
-            'css': [str(p) for p in _path_set.get('css', [])] or None,
-            'js': [str(p) for p in _path_set.get('js', [])] or None,
-            'py': [str(p) for p in _path_set.get('py', [])] or None,
+            "css": [str(p) for p in _path_set.get("css", [])] or None,
+            "js": [str(p) for p in _path_set.get("js", [])] or None,
+            "py": [str(p) for p in _path_set.get("py", [])] or None,
         }
 
-    @property
-    def assets(self) -> list[Path]:
-        return [
-            path.resolve()
-            for files in self.path_set.values()
-            if files
-            for path in files
-        ]
+    def assets(self, root: Path) -> list[Path]:
+        return [path.resolve() for files in self.path_set(root).values() if files for path in files]
 
-    def generate_bundles(self) -> dict[AssetType, str | None]:
-        _file_set = self.file_set
+    def generate_bundles(
+        self, statics: Path, bundles: Path, assets: str
+    ) -> dict[AssetType, str | None]:
+        _file_set = self.file_set(statics)
+        _css: str | None = None
+        _js: str | None = None
+        _py: str | None = None
+        if css := _file_set.get("css"):
+            _css = create_bundle(set(css), "css", bundles, assets)
+        if js := _file_set.get("js"):
+            _js = create_bundle(set(js), "js", bundles, assets)
+        if py := _file_set.get("py"):
+            _py = create_bundle(set(py), "py", bundles, assets)
         return {
-            "css": create_bundle(set(_file_set["css"]), 'css') if _file_set['css'] else None,
-            "js": create_bundle(set(_file_set["js"]), 'js') if _file_set['js'] else None,
-            "py": create_bundle(set(_file_set["py"]), 'py') if _file_set['py'] else None,
+            "css": _css,
+            "js": _js,
+            "py": _py,
         }
+
 
 HMR = Template("""
 <script>
@@ -143,6 +156,7 @@ HMR = Template("""
 })();
 </script>
 """)
+
 
 @dataclass
 class Bundles:
@@ -165,7 +179,7 @@ class Bundles:
             result += t'<script type="module" src="https://pyscript.net/releases/2025.11.2/core.js"></script>'
             for url in resolved.py:
                 result += t'<script type="py" src="{url}" async></script>'
-        if registry._watch_task:
+        if registry.watch:
             result += HMR
 
         return html(result)
@@ -179,20 +193,12 @@ class ResolvedBundles:
     js: list[str] = field(default_factory=list)
     py: list[str] = field(default_factory=list)
 
-class LayoutRenderer(Protocol):
-    """Protocol for layout render functions."""
-
-    def __call__(
-        self, content: SafeHTML, bundles: Bundles, **kwargs
-    ) -> Awaitable[SafeHTML]: ...
-
-
 
 class Manifest(BaseModel):
     bundles: dict[componentName, dict[AssetType, str | None]] = {}
 
-    def add_component(self, comp: Component) -> None:
-        self.bundles[comp.name] = comp.generate_bundles()
+    def add_component(self, comp: Component, static: Path, bundles: Path, assets: str) -> None:
+        self.bundles[comp.name] = comp.generate_bundles(static, bundles, assets)
 
 
 class Registry:
@@ -204,7 +210,7 @@ class Registry:
     _assets: dict[Path, set[Component]]
     _frozen: bool = False
     _watch: bool = False
-    _manifest: Manifest | None
+    _manifest: Manifest | None = None
     _static_dir: Path
     _bundle_dir: Path
     _assets_path: str
@@ -212,15 +218,11 @@ class Registry:
     _watch_task: asyncio.Task | None
 
     def __new__(cls) -> "Registry":
-        if cls._instance is None:
+        if cls._instance is None:  # pragma: no branch
             cls._instance = super().__new__(cls)
             cls._instance._components = {}
             cls._instance._layouts = {}
-            cls._instance._static_dir = Path('static')
-            cls._instance._bundle_dir = Path('dist/bundles')
-            cls._instance._assets_path = "/assets"
             cls._instance._assets = defaultdict(set)
-            cls._instance._manifest = None
             cls._clients = WeakSet()
             cls._watch_task = None
         return cls._instance
@@ -229,8 +231,8 @@ class Registry:
         self,
         frozen: bool = False,
         watch: bool = False,
-        static_dir: str | Path = Path('static'),
-        bundle_dir: str | Path = Path('dist/bundles'),
+        static_dir: Path = Path("static"),
+        bundle_dir: Path = Path("dist/bundles"),
         assets_path: str = "/assets",
     ) -> None:
         """Configure the registry
@@ -242,18 +244,26 @@ class Registry:
             bundle_dir: Path to bundled output files: default ('dist/bundles')
             asset_path: URL root to expose bundled assets: default ('/assets')
         """
-        if isinstance(static_dir, str):
-            static_dir = Path(static_dir)
-        self._static_dir = static_dir
-        if isinstance(bundle_dir, str):
-            bundle_dir = Path(bundle_dir)
-        self._bundle_dir = bundle_dir
-        self._assets_path = assets_path
+        logger.info(
+            f"Initializing 'registry'"
+            f" frozen={frozen} watch={watch} static_dir={static_dir}"
+            f" bundle_dir={bundle_dir} assets_path={assets_path}"
+        )
         self._frozen = frozen
         self._watch = watch
+        self._static_dir = static_dir
+        self._bundle_dir = bundle_dir
+        self._assets_path = assets_path
+        self._load_assets()
         self._load_manifest(frozen=frozen)
-        if watch:
-            await self._start_ws_watch()
+        await self._start_ws_watch()
+
+    def _load_assets(self) -> None:
+        for name, comp in self._components.items():
+            if name.startswith("__mp_main__"):  # pragma: no cover
+                continue
+            for asset in comp.assets(self.static_dir):
+                self._assets[asset].add(comp)
 
     def _load_manifest(self, frozen: bool = False) -> None:
         path = self._bundle_dir / "manifest.json"
@@ -261,7 +271,7 @@ class Registry:
             self._manifest = Manifest.model_validate(
                 json.loads(path.read_text()) if path.exists() else {}
             )
-        except Exception:
+        except Exception:  # pragma: no cover
             self._manifest = Manifest(bundles={})
 
         if frozen:
@@ -270,10 +280,10 @@ class Registry:
         self._bundle_dir.mkdir(parents=True, exist_ok=True)
 
         for name, comp in self._components.items():
-            if name.startswith('__mp_main__'):
+            if name.startswith("__mp_main__"):  # pragma: no cover
                 continue
-            logger.info(f'add component to manifest {name}')
-            self._manifest.add_component(comp)
+            logger.info(f"add component to manifest {name}")
+            self._manifest.add_component(comp, self.static_dir, self.bundles_dir, self._assets_path)
         self.save_manifest()
 
     async def _broadcast_reload(self):
@@ -281,11 +291,11 @@ class Registry:
             try:
                 await ws.send_text("reload")
             except:
-               self._clients.discard(ws)
+                self._clients.discard(ws)
 
     async def _watch_loop(self, root: Path):
         if self._manifest is None:
-            raise ManifestNotConfigured('Error brosky')
+            raise ManifestNotConfigured("Error brosky")
 
         logger.info(f"Starting watcher process on files in '{root}'")
         async for changes in awatch(root):
@@ -295,14 +305,16 @@ class Registry:
                 for comp in self._assets.get(p, []):
                     has_changes = True
                     logger.info(f"Rebuilding component: {comp.name}")
-                    self._manifest.add_component(comp)
+                    self._manifest.add_component(
+                        comp, self.static_dir, self.bundles_dir, self._assets_path
+                    )
                     await self._broadcast_reload()
 
             if has_changes:
                 self.save_manifest()
 
-    async def _start_ws_watch(self):
-        if self._watch_task is None:
+    async def _start_ws_watch(self) -> None:
+        if self._watch and self._watch_task is None:
             self._watch_task = asyncio.create_task(self._watch_loop(self._static_dir))
 
     def add_ws_client(self, ws: WebSocket) -> None:
@@ -312,6 +324,10 @@ class Registry:
         self._clients.discard(ws)
 
     async def teardown(self):
+        self._assets.clear()
+        self._manifest = None
+        self._frozen = False
+        self._watch = False
         if self._watch_task:
             self._watch_task.cancel()
             self._watch_task = None
@@ -342,14 +358,10 @@ class Registry:
 
     def add_component(self, comp: Component) -> None:
         self._components[comp.name] = comp
-        for asset in comp.assets:
-            self._assets[asset].add(comp)
 
     def add_layout(self, comp: Component) -> None:
         self._components[comp.name] = comp
         self._layouts[comp.name] = comp
-        for asset in comp.assets:
-            self._assets[asset].add(comp)
 
     def get_component(self, name: str) -> dict[AssetType, str | None] | None:
         if self._manifest is None:
@@ -367,12 +379,6 @@ class Registry:
         name = getattr(fn, "_htmpl_component", None) or getattr(fn, "_htmpl_layout", None)
         return self._components.get(name) if name else None
 
-    # def clear(self) -> None:
-    #     self._components.clear()
-    #     self._layouts.clear()
-    #     self._assets.clear()
-    #     self._manifest = None
-
 
 registry = Registry()
 
@@ -388,18 +394,18 @@ class AssetCollector:
 
     def add_by_name(self, name: str) -> None:
         """Add assets by component name."""
-        logger.info(f'adding asset by name: {name}')
+        logger.info(f"adding asset by name: {name}")
         if comp := registry.get_component(name):
-            if _css := comp.get('css'):
+            if _css := comp.get("css"):
                 self.css[_css] = 1
-            if _js := comp.get('js'):
+            if _js := comp.get("js"):
                 self.js[_js] = 1
-            if _py := comp.get('py'):
+            if _py := comp.get("py"):
                 self.py[_py] = 1
 
     def bundles(self) -> ResolvedBundles:
         """Resolve collected assets to bundle URLs."""
-        logger.info(f'loaded {self.css}')
+        logger.info(f"loaded {self.css}")
         return ResolvedBundles(
             css=list(self.css.keys()),
             js=list(self.js.keys()),
@@ -519,7 +525,7 @@ def _fallback_bundle(files: list[Path], outfile: Path) -> None:
     outfile.write_text("\n\n".join(parts))
 
 
-def create_bundle(files: set[str], ext: str) -> str | None:
+def create_bundle(files: set[str], ext: str, bundle_dir: Path, assets_path: str) -> str | None:
     """Create a bundle for a set of files, returns URL."""
     if not files:
         return None
@@ -539,8 +545,8 @@ def create_bundle(files: set[str], ext: str) -> str | None:
 
     file_hash = _hash(":".join(file_names))
     filename = f"{prefix}-{file_hash}.{ext}"
-    path = registry._bundle_dir / filename
-    final_path = f"{registry._assets_path}/{filename}"
+    path = bundle_dir / filename
+    final_path = f"{assets_path}/{filename}"
 
     if path.exists():
         return final_path
@@ -557,4 +563,3 @@ def create_bundle(files: set[str], ext: str) -> str | None:
     elapsed_ms = (time.perf_counter() - start_time) * 1000
     logger.info(f"built with fallback in {elapsed_ms:.1f}ms")
     return final_path
-
