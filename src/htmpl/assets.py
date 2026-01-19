@@ -16,10 +16,12 @@ from typing import Awaitable, Callable, Literal, Protocol, cast, runtime_checkab
 from weakref import WeakSet
 
 from fastapi import WebSocket
+from markupsafe import Markup
 from pydantic import BaseModel
+from tdom import html
 from watchfiles import awatch
 
-from .core import SafeHTML, html
+from .core import SafeHTML
 
 ESBUILD = shutil.which("esbuild")
 
@@ -165,7 +167,7 @@ class Bundles:
     _collector: AssetCollector
 
     @property
-    def head(self) -> Awaitable[SafeHTML]:
+    def head(self) -> Markup:
         """Generate HTML tags for document head."""
         # Resolve at render time after all components registered
         resolved = self._collector.bundles()
@@ -182,7 +184,7 @@ class Bundles:
         if registry.watch:
             result += HMR
 
-        return html(result)
+        return Markup(html(result))
 
 
 @dataclass

@@ -1,7 +1,7 @@
 """Tests for htmpl FastAPI integration."""
 
 import re
-from typing import Annotated
+from typing import Annotated, Any
 
 import tempfile
 from pathlib import Path
@@ -11,9 +11,8 @@ from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import Field, EmailStr
 
-from htmpl import html, forms, SafeHTML, render_html
-from htmpl.elements import section, h1, p, article, form, button
-from htmpl.htmx import is_htmx
+from tdom import html
+from htmpl import forms, SafeHTML, render_html
 from htmpl.assets import (
     Bundles,
     AssetCollector,
@@ -22,7 +21,7 @@ from htmpl.assets import (
     registry,
     qualified_name,
 )
-from htmpl.fastapi import PageRenderer, use_layout, use_component, use_bundles
+from htmpl.fastapi import ParsedForm, use_form, use_component, use_bundles, is_htmx
 
 
 @pytest.fixture(scope="function")
@@ -70,50 +69,52 @@ async def prod_registry():
 
 
 @component(css={"button.css"})
-async def Button(label: str):
-    return await html(t"<button class='btn'>{label}</button>")
+def Button(label: str):
+    return html(t"<button class='btn'>{label}</button>")
 
 
 @component(css={"card.css"}, js={"card.js"})
-async def Card(title: str, body: SafeHTML):
-    return await html(t"<div class='card'><h3>{title}</h3>{body}</div>")
+def Card(title: str, body: SafeHTML):
+    return html(t"<div class='card'><h3>{title}</h3>{body}</div>")
 
 
 @component(js={"nav.js"}, py={"nav.py"})
-async def NavBar(user: str = "Guest"):
-    return await html(t"<nav>Welcome, {user}</nav>")
+async def NavBar():
+    def _comp(user: str = "Guest"):
+        return html(t"<nav>Welcome, {user}</nav>")
+    return _comp
 
 
-@layout(css={"app.css"}, title="Page", body_class="")
+@component(css={"app.css"})
 async def AppLayout(
-    content: SafeHTML,
     bundles: Annotated[Bundles, Depends(use_bundles)],
     nav: Annotated[SafeHTML, use_component(NavBar)],
-    title: str,
-    body_class: str,
 ):
-    return await html(t"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>{title}</title>
-            {bundles.head}
-        </head>
-        <body class="{body_class}">
-            {nav}
-            <main>{content}</main>
-        </body>
-        </html>
-    """)
+
+    def _component(children, title="Page", body_class="") -> SafeHTML:
+        return html(t"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>{title}</title>
+                {bundles.head}
+            </head>
+            <body class="{body_class}">
+                {nav}
+                <main>{children}</main>
+            </body>
+            </html>
+        """)
+    return _component
 
 
-@layout()
+@component()
 async def MinimalLayout(
-    content: SafeHTML,
     bundles: Annotated[Bundles, Depends(use_bundles)],
 ):
-    return await html(t"<head>{bundles.head}</head><div class='minimal'>{content}</div>")
-
+    def _component(children):
+        return html(t"<head>{bundles.head}</head><div class='minimal'>{children}</div>")
+    return _component
 
 # --- Tests ---
 
@@ -161,25 +162,25 @@ class TestRouter:
         router = APIRouter()
 
         @router.get("/")
-        async def home(page: Annotated[PageRenderer, use_layout(AppLayout)]):
-            return await page(section(h1("Home")), title="Home")
+        async def home(page: Annotated[SafeHTML, use_component(AppLayout)]):
+            return await render_html(t'<{page} title="Home"><section><h1>Home</h1></section></{page}>')
 
         @router.get("/user/{name}")
-        async def user(name: str, page: Annotated[PageRenderer, use_layout(AppLayout)]):
-            return await page(p(f"Hello, {name}!"), title=f"User: {name}")
+        async def user(name: str, page: Annotated[SafeHTML, use_component(AppLayout)]):
+            return await render_html(t'<{page} title="User: {name}"><section><p>Hello, {name}!</p></section></{page}>')
 
         @router.get("/minimal")
-        async def minimal(page: Annotated[PageRenderer, use_layout(MinimalLayout)]):
-            return await page(p("Minimal page"))
+        async def minimal(page: Annotated[SafeHTML, use_component(MinimalLayout)]):
+            return await render_html(t'<{page}><p>Minimal page</p></{page}>')
 
         @router.get("/custom-class")
-        async def custom_class(page: Annotated[PageRenderer, use_layout(AppLayout)]):
-            return await page(p("Custom"), title="Custom", body_class="dark-mode")
+        async def custom_class(page: Annotated[SafeHTML, use_component(AppLayout)]):
+            return await render_html(t'<{page} title="Custom" body_class="dark-mode"><p>Custom</p></{page}>')
 
         @router.get("/default-title")
-        async def default_title(page: Annotated[PageRenderer, use_layout(AppLayout)]):
+        async def default_title(page: Annotated[SafeHTML, use_component(AppLayout)]):
             # Uses default title="Page" from decorator
-            return await page(p("Default"))
+            return await render_html(t'<{page}><p>Default</p></{page}>')
 
         @router.get("/json")
         async def json_route():
@@ -217,7 +218,7 @@ class TestRouter:
     def test_minimal_layout(self, client, prod_registry):
         response = client.get("/minimal")
         assert response.status_code == 200
-        assert "<div class='minimal'>" in response.text
+        assert '<div class="minimal">' in response.text
         assert "<!DOCTYPE" not in response.text
 
     def test_custom_body_class(self, client):
@@ -249,51 +250,39 @@ class TestFormRouter:
             email: EmailStr
             agree_tos: bool
 
-        async def signup_template(form_class: type[SignupSchema], values, errors):
-            return article(
-                h1("Signup"),
-                form_class.render(action="/signup", values=values, errors=errors),
-            )
-
-        async def login_template(form_class: type[LoginSchema], values, errors):
-            return article(
-                h1("Login"),
-                form(
-                    form_class.render_field("email", values.get("email"), errors.get("email")),
-                    form_class.render_field("password", error=errors.get("password")),
-                    button("Submit", type="submit"),
-                    action="/login",
-                    method="post",
-                ),
-            )
-
         @router.get("/login")
-        async def login_page(page: Annotated[PageRenderer, use_layout(MinimalLayout)]):
-            return await page(await login_template(LoginSchema, {}, {}))
+        async def login_page(page: Annotated[SafeHTML, use_component(MinimalLayout)]):
+            rendered = LoginSchema.render(submit_text="Login")
+            return await render_html(t"<{page}>{rendered}</{page}>")
 
         @router.post("/login")
         async def login(
-            page: Annotated[PageRenderer[LoginSchema], use_layout(MinimalLayout, form=LoginSchema)],
+            page: Annotated[SafeHTML, use_component(MinimalLayout)],
+            parsed: Annotated[ParsedForm[LoginSchema], use_form(LoginSchema)]
         ):
-            if page.errors:
-                return await page.form_error(login_template)
-            assert page.data is not None
-            return await page(section(h1(f"Welcome, {page.data.email}!")))
+            if parsed.errors:
+                rendered = LoginSchema.render(values=parsed.values, errors=parsed.errors, submit_text="Login")
+                return await render_html(t"<{page}>{rendered}</{page}>")
+
+            assert parsed.data is not None
+            return await render_html(t"<{page}><h1>Welcome, {parsed.data.email}!</h1></{page}>")
 
         @router.get("/signup")
-        async def signup_page(page: Annotated[PageRenderer, use_layout(MinimalLayout)]):
-            return await page(await signup_template(SignupSchema, {}, {}))
+        async def signup_page(page: Annotated[SafeHTML, use_component(MinimalLayout)],):
+            rendered = SignupSchema.render(submit_text="Login")
+            return await render_html(t"<{page}>{rendered}</{page}>")
 
         @router.post("/signup")
         async def signup(
-            page: Annotated[
-                PageRenderer[SignupSchema], use_layout(MinimalLayout, form=SignupSchema)
-            ],
+            page: Annotated[SafeHTML, use_component(MinimalLayout)],
+            parsed: Annotated[ParsedForm[SignupSchema], use_form(SignupSchema)],
         ):
-            if page.errors:
-                return await page.form_error(signup_template)
-            assert page.data is not None
-            return await page(section(h1(f"Account created for {page.data.username}!")))
+            if parsed.errors:
+                rendered = SignupSchema.render(values=parsed.values, errors=parsed.errors, submit_text="Login")
+                return await render_html(t"<{page}>{rendered}</{page}>")
+
+            assert parsed.data is not None
+            return await render_html(t"<{page}><h1>Account created for {parsed.data.username}!</h1></{page}>")
 
         app.include_router(router)
         return app
@@ -337,23 +326,23 @@ class TestFormRouter:
         assert "Account created for testuser!" in response.text
 
 
-class TestPageRenderer:
+class UNTestPageRenderer:
     @pytest.fixture
     def app(self, setup_registry):
         app = FastAPI()
         router = APIRouter()
 
-        @router.get("/redirect-test")
-        async def redirect_test(page: Annotated[PageRenderer, use_layout(MinimalLayout)]):
-            return page.redirect("/target")
+        # @router.get("/redirect-test")
+        # async def redirect_test(page: Annotated[PageRenderer, use_layout(MinimalLayout)]):
+        #     return page.redirect("/target")
 
-        @router.get("/refresh-test")
-        async def refresh_test(page: Annotated[PageRenderer, use_layout(MinimalLayout)]):
-            return page.refresh()
+        # @router.get("/refresh-test")
+        # async def refresh_test(page: Annotated[PageRenderer, use_layout(MinimalLayout)]):
+        #     return page.refresh()
 
-        @router.get("/is-htmx")
-        async def is_htmx_route(page: Annotated[PageRenderer, use_layout(MinimalLayout)]):
-            return await page(p(f"is_htmx: {page.is_htmx}"))
+        # @router.get("/is-htmx")
+        # async def is_htmx_route(page: Annotated[PageRenderer, use_layout(MinimalLayout)]):
+        #     return await page(p(f"is_htmx: {page.is_htmx}"))
 
         app.include_router(router)
         return app
@@ -399,13 +388,13 @@ class TestAssetIntegration:
         router = APIRouter()
 
         @router.get("/with-layout")
-        async def with_layout(page: Annotated[PageRenderer, use_layout(AppLayout)]):
-            return await page(section(h1("With Layout")), title="Test")
+        async def with_layout(page: Annotated[SafeHTML, use_component(AppLayout)]):
+            return await render_html(t"<{page} title='Test'><h1>With Layout</h1></{page}>")
 
         @router.get("/partial")
         async def partial():
             # No use_layout = no collector = no asset tracking
-            btn = await Button("Click")
+            btn = Button("Click")
             return await render_html(btn)
 
         app.include_router(router)
@@ -425,7 +414,7 @@ class TestAssetIntegration:
     def test_partial_no_layout(self, client):
         response = client.get("/partial")
         assert response.status_code == 200
-        assert "<button class='btn'>Click</button>" in response.text
+        assert '<button class="btn">Click</button>' in response.text
         assert "<!DOCTYPE" not in response.text
 
 

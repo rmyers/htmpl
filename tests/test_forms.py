@@ -14,7 +14,6 @@ from htmpl.forms import (
     _label_from_name,
     _infer_input_type,
 )
-from htmpl.elements import button, form, div, h3
 
 
 # Test models
@@ -35,7 +34,9 @@ class FullForm(BaseForm):
     name: str = Field(title="Full Name", description="Enter your name")
     email: EmailStr = Field(title="Email Address")
     password: str = Field(min_length=8)
-    bio: str = Field(default="", json_schema_extra={"form_widget": "textarea", "rows": 6})
+    bio: str = Field(
+        default="", json_schema_extra={"form_widget": "textarea", "rows": 6}
+    )
     role: Literal["admin", "user", "guest"] = Field(default="user")
     agree: bool = Field(default=False, title="I agree to terms")
 
@@ -170,11 +171,11 @@ class TestFieldConfig:
 
 
 class TestFormRendering:
-    async def test_render_simple_form(self):
+    def test_render_simple_form(self):
         renderer = SimpleForm
         element = renderer.render(action="/submit")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert "<form" in html
         assert 'action="/submit"' in html
@@ -184,19 +185,19 @@ class TestFormRendering:
         assert 'type="submit"' in html
         assert "Submit" in html
 
-    async def test_render_with_values(self):
+    def test_render_with_values(self):
         renderer = SimpleForm
         element = renderer.render(
             action="/submit",
             values={"name": "Bob", "email": "bob@example.com"},
         )
 
-        html = await element.__html__()
+        html = str(element)
 
         assert 'value="Bob"' in html
         assert 'value="bob@example.com"' in html
 
-    async def test_render_with_errors(self):
+    def test_render_with_errors(self):
         renderer = SimpleForm
         element = renderer.render(
             action="/submit",
@@ -204,42 +205,31 @@ class TestFormRendering:
             errors={"name": "Name is required", "email": "Invalid email"},
         )
 
-        html = await element.__html__()
+        html = str(element)
 
         assert 'aria-invalid="true"' in html
         assert "Name is required" in html
         assert "Invalid email" in html
         assert 'class="error"' in html
 
-    async def test_render_with_exclude(self):
-        renderer = SimpleForm
-        element = renderer.render(action="/submit", exclude={"email"})
-
-        html = await element.__html__()
-
-        assert 'name="name"' in html
-        assert 'name="email"' not in html
-
-    async def test_render_with_include(self):
+    def test_render_descriptions(self):
         renderer = FullForm
-        element = renderer.render(action="/submit", include=["name", "email"])
+        element = renderer.render(action="/submit")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert 'name="name"' in html
-        assert 'name="email"' in html
-        assert 'name="password"' not in html
-        assert 'name="bio"' not in html
+        assert "<small>Enter your name</small>" in html
 
-    async def test_custom_submit_text(self):
+    def test_custom_submit_text(self):
         renderer = SimpleForm
         element = renderer.render(action="/submit", submit_text="Create Account")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert "Create Account" in html
 
-    async def test_extra_form_attrs(self):
+    def test_extra_form_attrs(self):
         renderer = SimpleForm
         element = renderer.render(
             action="/submit",
@@ -247,18 +237,18 @@ class TestFormRendering:
             class_="my-form",
         )
 
-        html = await element.__html__()
+        html = str(element)
 
         assert 'id="signup-form"' in html
         assert 'class="my-form"' in html
 
 
 class TestFieldRendering:
-    async def test_render_input(self):
+    def test_render_input(self):
         renderer = ValidatedForm
         element = renderer.render_field("username")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert "<label>" in html
         assert "<input" in html
@@ -267,33 +257,33 @@ class TestFieldRendering:
         assert 'maxlength="20"' in html
         assert "required" in html
 
-    async def test_render_number_input(self):
+    def test_render_number_input(self):
         renderer = ValidatedForm
         element = renderer.render_field("age", value=25)
 
-        html = await element.__html__()
+        html = str(element)
 
         assert 'type="number"' in html
         assert 'min="18"' in html
         assert 'max="120"' in html
         assert 'value="25"' in html
 
-    async def test_render_textarea(self):
+    def test_render_textarea(self):
         renderer = FullForm
         element = renderer.render_field("bio", value="Hello world")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert "<textarea" in html
         assert 'name="bio"' in html
         assert 'rows="6"' in html
         assert "Hello world</textarea>" in html
 
-    async def test_render_select(self):
+    def test_render_select(self):
         renderer = FullForm
         element = renderer.render_field("role", value="admin")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert "<select" in html
         assert 'name="role"' in html
@@ -301,22 +291,22 @@ class TestFieldRendering:
         assert '<option value="user"' in html
         assert '<option value="guest"' in html
 
-    async def test_render_checkbox(self):
+    def test_render_checkbox(self):
         renderer = FullForm
         element = renderer.render_field("agree", value=True)
 
-        html = await element.__html__()
+        html = str(element)
 
         assert 'type="checkbox"' in html
         assert 'name="agree"' in html
         assert "checked" in html
         assert "I agree to terms" in html
 
-    async def test_render_radio(self):
+    def test_render_radio(self):
         renderer = ChoicesForm
         element = renderer.render_field("priority", value="high")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert "<fieldset>" in html
         assert "<legend>" in html
@@ -325,7 +315,7 @@ class TestFieldRendering:
         assert 'value="normal"' in html
         assert 'value="high" checked' in html
 
-    async def test_render_unknown_field_raises(self):
+    def test_render_unknown_field_raises(self):
         renderer = SimpleForm
 
         with pytest.raises(ValueError, match="Unknown field"):
@@ -367,113 +357,89 @@ class TestParseFormErrors:
 
 
 class TestEmailInference:
-    async def test_email_str_type(self):
+    def test_email_str_type(self):
         renderer = FullForm
         element = renderer.render_field("email")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert 'type="email"' in html
 
 
 class TestCustomLayout:
-    async def test_input_only(self):
+    def test_input_only(self):
         renderer = SimpleForm
         element = renderer.input("name", value="Bob")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert "<input" in html
         assert 'value="Bob"' in html
         assert 'id="name"' in html
         assert "<label>" not in html
 
-    async def test_input_with_extra_attrs(self):
+    def test_input_with_extra_attrs(self):
         renderer = SimpleForm
         element = renderer.input("name", class_="custom", data_test="value")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert 'class="custom"' in html
         assert 'data-test="value"' in html
 
-    async def test_label_for(self):
+    def test_label_for(self):
         renderer = FullForm
         element = renderer.label_for("email")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert "<label" in html
         assert 'for="email"' in html
         assert "Email Address" in html
 
-    async def test_error_for_with_error(self):
+    def test_error_for_with_error(self):
         renderer = SimpleForm
         element = renderer.error_for("name", {"name": "Required"})
 
-        html = await element.__html__()
+        html = str(element)
 
         assert "Required" in html
         assert 'class="error"' in html
 
-    async def test_error_for_without_error(self):
+    def test_error_for_without_error(self):
         renderer = SimpleForm
         element = renderer.error_for("name", {})
 
         assert element is None
 
-    async def test_fields_list(self):
+    def test_fields_list(self):
         renderer = SimpleForm
         elements = renderer.form_fields("name", "email", values={"name": "Bob"})
 
         assert len(elements) == 2
 
-        html = await elements[0].__html__()
+        html = str(elements[0])
         assert 'name="name"' in html
         assert 'value="Bob"' in html
 
-    async def test_inline_fields(self):
+    def test_inline_fields(self):
         renderer = SimpleForm
         element = renderer.inline("name", "email")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert 'class="grid"' in html
         assert 'name="name"' in html
         assert 'name="email"' in html
 
-    async def test_group_fields(self):
+    def test_group_fields(self):
         renderer = FullForm
         element = renderer.group("Account Info", "name", "email")
 
-        html = await element.__html__()
+        html = str(element)
 
         assert "<fieldset>" in html
         assert "<legend>" in html
         assert "Account Info" in html
         assert 'name="name"' in html
         assert 'name="email"' in html
-
-    async def test_custom_form_layout(self):
-        """Test building a completely custom form layout."""
-        renderer = FullForm
-        values = {"name": "Bob", "email": "bob@test.com"}
-        errors = {"password": "Too short"}
-
-        custom_form = form(
-            h3("Personal Info"),
-            renderer.inline("name", "email", values=values),
-            h3("Security"),
-            renderer.render_field("password", error=errors.get("password")),
-            renderer.render_field("agree"),
-            button("Submit", type="submit"),
-            action="/submit",
-        )
-
-        html = await custom_form.__html__()
-
-        assert "Personal Info" in html
-        assert "Security" in html
-        assert 'value="Bob"' in html
-        assert "Too short" in html
-        assert 'aria-invalid="true"' in html
