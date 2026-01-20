@@ -9,6 +9,7 @@ from tdom import html
 from .core import (
     SafeHTML,
     render_html,
+    render,
 )
 from .forms import (
     BaseForm,
@@ -23,6 +24,7 @@ __all__ = [
     # Core
     "SafeHTML",
     "render_html",
+    "render",
     # Forms
     "BaseForm",
     "FieldConfig",
