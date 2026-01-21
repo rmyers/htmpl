@@ -159,6 +159,7 @@ class TestFieldConfig:
 
         country_cfg = renderer.get_field_configs()["country"]
         assert country_cfg.widget == "select"
+        assert country_cfg.choices is not None
         assert ["us", "United States"] in country_cfg.choices
 
     def test_configure_override(self):

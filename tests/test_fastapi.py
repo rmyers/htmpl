@@ -12,14 +12,12 @@ from fastapi.testclient import TestClient
 from pydantic import Field, EmailStr
 
 from tdom import html
-from htmpl import forms, SafeHTML, render_html
+from htmpl import forms, SafeHTML, render_html, render
 from htmpl.assets import (
     Bundles,
     AssetCollector,
     component,
-    layout,
     registry,
-    qualified_name,
 )
 from htmpl.fastapi import ParsedForm, use_form, use_component, use_bundles, is_htmx
 
@@ -68,30 +66,30 @@ async def prod_registry():
     await registry.teardown()
 
 
-@component(css={"button.css"})
+@component("fancy-button", css={"button.css"})
 def Button(label: str):
     return html(t"<button class='btn'>{label}</button>")
 
 
-@component(css={"card.css"}, js={"card.js"})
-def Card(title: str, body: SafeHTML):
-    return html(t"<div class='card'><h3>{title}</h3>{body}</div>")
+@component("app-card", css={"card.css"}, js={"card.js"})
+def Card(children, title: str):
+    return html(t"<div class='card'><h3>{title}</h3>{children}</div>")
 
 
-@component(js={"nav.js"}, py={"nav.py"})
+@component("nav-bar", js={"nav.js"}, py={"nav.py"})
 async def NavBar():
     def _comp(user: str = "Guest"):
         return html(t"<nav>Welcome, {user}</nav>")
     return _comp
 
 
-@component(css={"app.css"})
+@component("app-layout",css={"app.css"})
 async def AppLayout(
     bundles: Annotated[Bundles, Depends(use_bundles)],
     nav: Annotated[SafeHTML, use_component(NavBar)],
 ):
 
-    def _component(children, title="Page", body_class="") -> SafeHTML:
+    def _component(children, title="Page", body_class=""):
         return html(t"""
             <!DOCTYPE html>
             <html>
@@ -108,7 +106,7 @@ async def AppLayout(
     return _component
 
 
-@component()
+@component("min-layout")
 async def MinimalLayout(
     bundles: Annotated[Bundles, Depends(use_bundles)],
 ):
@@ -116,14 +114,11 @@ async def MinimalLayout(
         return html(t"<head>{bundles.head}</head><div class='minimal'>{children}</div>")
     return _component
 
-# --- Tests ---
 
-
-class TestQualifiedName:
-    def test_qualified_name(self):
-        assert qualified_name(Button) == "test_fastapi.Button"
-        assert qualified_name(AppLayout) == "test_fastapi.AppLayout"
-
+@component("render-layout", css={"app.css"})
+async def RenderLayout(children, bundles: Bundles):
+    f = html(t"<head>{bundles:safe}</head><div class='minimal'>{children}</div>")
+    return f
 
 class TestAssetCollector:
     def assert_matches(self, collection, pattern: str):
@@ -132,25 +127,25 @@ class TestAssetCollector:
         for item in collection:
             assert regex.match(item), f"'{item}' does not match pattern '{pattern}'"
 
-    async def test_empty_collector(self, setup_registry):
+    async def test_empty_collector(self, setup_registry: EmailStr):
         collector = AssetCollector()
         resolved = collector.bundles()
         assert resolved.css == []
         assert resolved.js == []
 
-    async def test_add_by_name(self, setup_registry):
+    async def test_add_by_name(self, setup_registry: EmailStr):
         # await registry.initialize()
         collector = AssetCollector()
-        collector.add_by_name(qualified_name(Card))
+        collector.add_by_name("app-card")
         assert len(collector.css) == 1
         assert len(collector.js) == 1
         self.assert_matches(collector.css, r"/assets/styles-[a-f0-9]+\.css$")
         self.assert_matches(collector.js, r"/assets/scripts-[a-f0-9]+\.js$")
 
-    async def test_deduplication(self, setup_registry):
+    async def test_deduplication(self, setup_registry: EmailStr):
         collector = AssetCollector()
-        collector.add_by_name(qualified_name(Button))
-        collector.add_by_name(qualified_name(Button))
+        collector.add_by_name("fancy-button")
+        collector.add_by_name("fancy-button")
         assert len(collector.css) == 1
         self.assert_matches(collector.css, r"/assets/styles-[a-f0-9]+\.css$")
 
@@ -182,6 +177,17 @@ class TestRouter:
             # Uses default title="Page" from decorator
             return await render_html(t'<{page}><p>Default</p></{page}>')
 
+        @router.get("/render-test")
+        async def render_testing(bundles: Bundles = Depends(use_bundles)):
+            return await render(
+                t"""
+                    <render-layout bundles={bundles.head}>
+                        <app-card title='test'>boo</app-card>
+                    </render-layout>
+                """,
+                registry.components
+            )
+
         @router.get("/json")
         async def json_route():
             return {"message": "json"}
@@ -190,14 +196,14 @@ class TestRouter:
         return app
 
     @pytest.fixture
-    def client(self, app):
+    def client(self, app: FastAPI):
         return TestClient(app)
 
     @pytest.fixture(autouse=True)
-    def setup(self, setup_registry):
+    def setup(self, setup_registry: EmailStr):
         pass
 
-    def test_layout_renders(self, client):
+    def test_layout_renders(self, client: TestClient):
         response = client.get("/")
         assert response.status_code == 200
         assert "text/html" in response.headers["content-type"]
@@ -205,31 +211,35 @@ class TestRouter:
         assert "<title>Home</title>" in response.text
         assert "<section><h1>Home</h1></section>" in response.text
 
-    def test_nav_component_rendered(self, client):
+    def test_nav_component_rendered(self, client: TestClient):
         response = client.get("/")
         assert "<nav>Welcome, Guest</nav>" in response.text
 
-    def test_layout_with_params(self, client):
+    def test_layout_with_params(self, client: TestClient):
         response = client.get("/user/Bob")
         assert response.status_code == 200
         assert "<title>User: Bob</title>" in response.text
         assert "<p>Hello, Bob!</p>" in response.text
 
-    def test_minimal_layout(self, client, prod_registry):
+    def test_minimal_layout(self, client: TestClient, prod_registry: None):
         response = client.get("/minimal")
         assert response.status_code == 200
         assert '<div class="minimal">' in response.text
         assert "<!DOCTYPE" not in response.text
 
-    def test_custom_body_class(self, client):
+    def test_custom_body_class(self, client: TestClient):
         response = client.get("/custom-class")
         assert 'class="dark-mode"' in response.text
 
-    def test_default_title_from_decorator(self, client):
+    def test_default_title_from_decorator(self, client: TestClient):
         response = client.get("/default-title")
         assert "<title>Page</title>" in response.text
 
-    def test_json_passthrough(self, client):
+    def test_render_bundles_assets(self, client: TestClient):
+        response = client.get("/render-test")
+        assert '<div class="card"><h3>test</h3>boo</div>' in response.text
+
+    def test_json_passthrough(self, client: TestClient):
         response = client.get("/json")
         assert response.status_code == 200
         assert response.json() == {"message": "json"}
@@ -288,20 +298,20 @@ class TestFormRouter:
         return app
 
     @pytest.fixture
-    def client(self, app):
+    def client(self, app: FastAPI):
         return TestClient(app)
 
     @pytest.fixture(autouse=True)
-    def setup(self, setup_registry):
+    def setup(self, setup_registry: EmailStr):
         pass
 
-    def test_form_get_renders(self, client):
+    def test_form_get_renders(self, client: TestClient):
         response = client.get("/login")
         assert response.status_code == 200
         assert "<form" in response.text
         assert 'name="email"' in response.text
 
-    def test_form_post_valid(self, client):
+    def test_form_post_valid(self, client: TestClient):
         response = client.post(
             "/login",
             data={"email": "user@example.com", "password": "secretpassword"},
@@ -309,7 +319,7 @@ class TestFormRouter:
         assert response.status_code == 200
         assert "Welcome, user@example.com!" in response.text
 
-    def test_form_post_invalid(self, client):
+    def test_form_post_invalid(self, client: TestClient):
         response = client.post(
             "/login",
             data={"email": "not-an-email", "password": "secretpassword"},
@@ -318,7 +328,7 @@ class TestFormRouter:
         assert "<form" in response.text
         assert 'aria-invalid="true"' in response.text
 
-    def test_form_checkbox(self, client):
+    def test_form_checkbox(self, client: TestClient):
         response = client.post(
             "/signup",
             data={"username": "testuser", "email": "test@example.com", "agree_tos": "on"},
@@ -328,7 +338,7 @@ class TestFormRouter:
 
 class UNTestPageRenderer:
     @pytest.fixture
-    def app(self, setup_registry):
+    def app(self, setup_registry: EmailStr):
         app = FastAPI()
         router = APIRouter()
 
@@ -348,7 +358,7 @@ class UNTestPageRenderer:
         return app
 
     @pytest.fixture
-    def client(self, app):
+    def client(self, app: FastAPI):
         return TestClient(app, follow_redirects=False)
 
     def test_redirect_standard(self, client):
@@ -383,7 +393,7 @@ class TestAssetIntegration:
     """Integration tests for asset collection through the request cycle."""
 
     @pytest.fixture
-    def app(self, setup_registry):
+    def app(self, setup_registry: EmailStr):
         app = FastAPI()
         router = APIRouter()
 
@@ -401,17 +411,17 @@ class TestAssetIntegration:
         return app
 
     @pytest.fixture
-    def client(self, app):
+    def client(self, app: FastAPI):
         return TestClient(app)
 
-    def test_layout_collects_assets(self, client):
+    def test_layout_collects_assets(self, client: TestClient):
         response = client.get("/with-layout")
         assert response.status_code == 200
         assert "<head>" in response.text
         # NavBar component should be rendered
         assert "<nav>Welcome, Guest</nav>" in response.text
 
-    def test_partial_no_layout(self, client):
+    def test_partial_no_layout(self, client: TestClient):
         response = client.get("/partial")
         assert response.status_code == 200
         assert '<button class="btn">Click</button>' in response.text
@@ -422,7 +432,7 @@ class TestIntegration:
     """Integration tests with raw render_html usage."""
 
     @pytest.fixture
-    def app(self, setup_registry):
+    def app(self, setup_registry: EmailStr):
         app = FastAPI()
         router = APIRouter()
 
@@ -456,24 +466,24 @@ class TestIntegration:
         return app
 
     @pytest.fixture
-    def client(self, app):
+    def client(self, app: FastAPI):
         return TestClient(app)
 
-    def test_home_page(self, client):
+    def test_home_page(self, client: TestClient):
         response = client.get("/")
         assert response.status_code == 200
         assert "<!DOCTYPE html>" in response.text
         assert 'hx-get="/partial"' in response.text
 
-    def test_partial_htmx(self, client):
+    def test_partial_htmx(self, client: TestClient):
         response = client.get("/partial", headers={"HX-Request": "true"})
         assert response.text == "<p>Partial loaded!</p>"
 
-    def test_partial_direct(self, client):
+    def test_partial_direct(self, client: TestClient):
         response = client.get("/partial")
         assert "<!DOCTYPE html>" in response.text
 
-    def test_users_filtered(self, client):
+    def test_users_filtered(self, client: TestClient):
         response = client.get("/users?q=ali")
         assert "<li>Alice</li>" in response.text
         assert "<li>Bob</li>" not in response.text

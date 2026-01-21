@@ -6,6 +6,8 @@ import pytest
 from htmpl import SafeHTML, render
 from tdom import Node
 
+from htmpl.assets import Component, component
+
 class TestSafeHTML:
     def test_content(self):
         s = SafeHTML("<p>hello</p>")
@@ -23,6 +25,7 @@ class TestSafeHTML:
         assert d[SafeHTML("test")] == "value"
 
 
+@component('custom-layout')
 async def layout(children: list[Node], *, title="layout"):
     return t"<div><header>{title}</header>{children}</div>"
 
@@ -31,7 +34,7 @@ class TestRender:
     @pytest.fixture()
     def registry(self):
         return {
-            'custom-layout': layout
+            'custom-layout': Component(name='custom-layout', fn=layout)
         }
 
     async def test_renders_html_properly(self, registry):

@@ -6,11 +6,14 @@ import asyncio
 from dataclasses import dataclass
 from inspect import isawaitable, iscoroutinefunction
 from string.templatelib import Template
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from tdom import Element, Fragment, Node, html
 
 from fastapi.responses import HTMLResponse
+
+if TYPE_CHECKING:
+    from .assets import Component
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +56,7 @@ async def render_html(result: Any) -> HTMLResponse:
     return HTMLResponse("")
 
 
-async def process_components(node: Node, registry: dict) -> Node:
+async def process_components(node: Node, registry: dict[str, "Component"]) -> Node:
     """Walk tree, replace custom elements with registered component calls."""
     if isinstance(node, Fragment):
         children = await asyncio.gather(
@@ -71,9 +74,9 @@ async def process_components(node: Node, registry: dict) -> Node:
 
     # Custom element? Call the component
     if "-" in node.tag and node.tag in registry:
-        fn = registry[node.tag]
-        result = fn(children=list(children), **node.attrs)
-        if iscoroutinefunction(fn):
+        comp = registry[node.tag]
+        result = comp.fn(children=list(children), **node.attrs)
+        if isawaitable(result):
             result = await result
 
         # If component returned a Template, convert to Node
@@ -89,7 +92,6 @@ async def process_components(node: Node, registry: dict) -> Node:
 
 async def render(template: Template, registry: dict) -> HTMLResponse:
     content = html(template)
-    print(str(content))
     node = await process_components(content, registry)
-    print(str(node))
+    print(f"{node!r}")
     return HTMLResponse(str(node))
