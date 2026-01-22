@@ -16,10 +16,12 @@ from typing import Awaitable, Callable, Literal, Protocol, cast, runtime_checkab
 from weakref import WeakSet
 
 from fastapi import WebSocket
+from markupsafe import Markup
 from pydantic import BaseModel
+from tdom import html, Node
 from watchfiles import awatch
 
-from .core import SafeHTML, html
+from .core import SafeHTML
 
 ESBUILD = shutil.which("esbuild")
 
@@ -33,18 +35,13 @@ class ManifestNotConfigured(Exception):
     pass
 
 
-def qualified_name(fn: Callable) -> str:
-    """Get fully qualified name for a function."""
-    return f"{fn.__module__}.{fn.__name__}"
-
-
 @runtime_checkable
 class ComponentFunc(Protocol):
     """Protocol for decorated component functions."""
 
     _htmpl_component: str
 
-    def __call__(self, *args, **kwargs) -> Awaitable[SafeHTML]: ...
+    def __call__(self, *args, **kwargs) -> Awaitable[Node]: ...
 
 
 class LayoutRenderer(Protocol):
@@ -100,6 +97,7 @@ class Component:
     """Component definition with its assets."""
 
     name: str
+    fn: ComponentFunc
     css: set[str] = field(default_factory=set)
     js: set[str] = field(default_factory=set)
     py: set[str] = field(default_factory=set)
@@ -165,7 +163,7 @@ class Bundles:
     _collector: AssetCollector
 
     @property
-    def head(self) -> Awaitable[SafeHTML]:
+    def head(self) -> Markup:
         """Generate HTML tags for document head."""
         # Resolve at render time after all components registered
         resolved = self._collector.bundles()
@@ -182,7 +180,7 @@ class Bundles:
         if registry.watch:
             result += HMR
 
-        return html(result)
+        return Markup(html(result))
 
 
 @dataclass
@@ -387,21 +385,30 @@ registry = Registry()
 class AssetCollector:
     """Collects assets during request, deduplicates, resolves to bundles."""
 
+    _registry: Registry = field(default=registry)
+
     # Using ordered dict to preserve order and remove duplicates
     css: OrderedDict[str, int] = field(default_factory=OrderedDict)
     js: OrderedDict[str, int] = field(default_factory=OrderedDict)
     py: OrderedDict[str, int] = field(default_factory=OrderedDict)
 
-    def add_by_name(self, name: str) -> None:
+    def add_by_name(self, name: str) -> Component | None:
         """Add assets by component name."""
         logger.info(f"adding asset by name: {name}")
-        if comp := registry.get_component(name):
-            if _css := comp.get("css"):
+        comp = self._registry.components.get(name)
+        if comp is None:
+            logger.warning(f"Component {name} was not found in registry")
+            return None
+
+        if bundles := self._registry.get_component(name):
+            if _css := bundles.get("css"):
                 self.css[_css] = 1
-            if _js := comp.get("js"):
+            if _js := bundles.get("js"):
                 self.js[_js] = 1
-            if _py := comp.get("py"):
+            if _py := bundles.get("py"):
                 self.py[_py] = 1
+
+        return comp
 
     def bundles(self) -> ResolvedBundles:
         """Resolve collected assets to bundle URLs."""
@@ -412,67 +419,50 @@ class AssetCollector:
             py=list(self.py.keys()),
         )
 
+    @property
+    def head(self) -> Markup:
+        """Generate HTML tags for document head."""
+        # Resolve at render time after all components registered
+        resolved = self.bundles()
+
+        result: Template = t""
+        for url in resolved.css:
+            result += t'<link rel="stylesheet" href="{url}">'
+        for url in resolved.js:
+            result += t'<script src="{url}" defer></script>'
+        if resolved.py:
+            result += t'<script type="module" src="https://pyscript.net/releases/2025.11.2/core.js"></script>'
+            for url in resolved.py:
+                result += t'<script type="py" src="{url}" async></script>'
+        if registry.watch:
+            result += HMR
+
+        return Markup(html(result))
+
 
 def component(
+    name: str,
     *,
     css: set[str] | None = None,
     js: set[str] | None = None,
     py: set[str] | None = None,
 ):
     """Register a component with its assets."""
+    if '-' not in name:
+        raise ValueError(f"Component name {name} must include a hyphen `-`")
 
     def decorator(fn: Callable) -> ComponentFunc:
-        name = qualified_name(fn)
-
+        fn = cast(ComponentFunc, fn)
         registry.add_component(
             Component(
                 name=name,
+                fn=fn,
                 css=css or set(),
                 js=js or set(),
                 py=py or set(),
             )
         )
-        fn = cast(ComponentFunc, fn)
         fn._htmpl_component = name
-        return fn
-
-    return decorator
-
-
-def layout(
-    *,
-    css: set[str] | None = None,
-    js: set[str] | None = None,
-    py: set[str] | None = None,
-    **defaults,
-):
-    """Register a layout with its assets and default kwargs.
-
-    Usage:
-        @layout(css={"static/css/app.css"}, title="Page", body_class="")
-        async def AppLayout(
-            content: SafeHTML,
-            bundles: Annotated[Bundles, use_bundles()],
-            nav: Annotated[SafeHTML, use_component(NavBar)],
-            title: str,
-            body_class: str,
-        ):
-            return await html(t'<html>...')
-    """
-
-    def decorator(fn: Callable) -> Callable:
-        name = qualified_name(fn)
-
-        registry.add_layout(
-            Component(
-                name=name,
-                css=css or set(),
-                js=js or set(),
-                py=py or set(),
-            )
-        )
-        fn._htmpl_layout = name
-        fn._htmpl_defaults = defaults
         return fn
 
     return decorator

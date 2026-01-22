@@ -5,31 +5,11 @@ A minimal, React-inspired templating library that leverages PEP 750
 template strings for type-safe, composable HTML generation.
 """
 
+from tdom import html
 from .core import (
-    AsyncRenderable,
-    Renderable,
     SafeHTML,
-    attr,
-    cached,
-    cached_lru,
-    cached_ttl,
-    html,
-    raw,
     render_html,
-)
-from .elements import Element, Fragment, fragment
-from .components import (
-    Document,
-    Page,
-    Nav,
-    Card,
-    Form,
-    Field,
-    Button,
-    Alert,
-    Modal,
-    Table,
-    Grid,
+    render,
 )
 from .forms import (
     BaseForm,
@@ -39,33 +19,12 @@ from .forms import (
 
 __version__ = "0.1.0"
 __all__ = [
-    # Core
-    "AsyncRenderable",
-    "Renderable",
-    "SafeHTML",
-    "attr",
-    "cached",
-    "cached_lru",
-    "cached_ttl",
+    # TDOM re-export
     "html",
-    "raw",
+    # Core
+    "SafeHTML",
     "render_html",
-    # Elements
-    "Element",
-    "Fragment",
-    "fragment",
-    # Components
-    "Document",
-    "Page",
-    "Nav",
-    "Card",
-    "Form",
-    "Field",
-    "Button",
-    "Alert",
-    "Modal",
-    "Table",
-    "Grid",
+    "render",
     # Forms
     "BaseForm",
     "FieldConfig",

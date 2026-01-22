@@ -2,32 +2,18 @@
 Core async template processing engine.
 """
 
-from __future__ import annotations
-
 import asyncio
-from collections.abc import AsyncIterable, Awaitable, Iterable
 from dataclasses import dataclass
-from functools import wraps
-from html import escape
-from inspect import isasyncgen, isawaitable
-from string.templatelib import Template, Interpolation
-from typing import Protocol, runtime_checkable, Any, Callable, TypeVar
+from inspect import isawaitable, iscoroutinefunction
+from string.templatelib import Template
+from typing import Any, TYPE_CHECKING
+
+from tdom import Element, Fragment, Node, html
 
 from fastapi.responses import HTMLResponse
 
-
-@runtime_checkable
-class Renderable(Protocol):
-    """Protocol for objects that can render themselves as HTML."""
-
-    def __html__(self) -> str: ...
-
-
-@runtime_checkable
-class AsyncRenderable(Protocol):
-    """Protocol for objects that render asynchronously."""
-
-    async def __html__(self) -> str: ...
+if TYPE_CHECKING:
+    from .assets import Component
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,224 +34,52 @@ class SafeHTML:
     def __bool__(self) -> bool:
         return bool(self.content)
 
-    def __add__(self, other: SafeHTML | str) -> SafeHTML:
-        if isinstance(other, SafeHTML):
-            return SafeHTML(self.content + other.content)
-        return SafeHTML(self.content + escape(str(other)))
-
-    def __radd__(self, other: SafeHTML | str) -> SafeHTML:
-        if isinstance(other, SafeHTML):
-            return SafeHTML(other.content + self.content)
-        return SafeHTML(escape(str(other)) + self.content)
-
     def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
         return self.content.encode(encoding, errors)
 
 
-def raw(content: str) -> SafeHTML:
-    """Mark a string as safe/pre-escaped HTML. Use with caution."""
-    return SafeHTML(content)
+async def process_components(node: Node, registry: dict[str, "Component"]) -> Node:
+    """Walk tree, replace custom elements with registered component calls."""
+    if isinstance(node, Fragment):
+        children = await asyncio.gather(
+            *[process_components(c, registry) for c in node.children]
+        )
+        return Fragment(list(children))
 
+    if not isinstance(node, Element):
+        return node
 
-def attr(name: str, value: str | bool | None) -> SafeHTML:
-    """
-    Build a safe HTML attribute.
+    # Process children first (bottom-up)
+    children = await asyncio.gather(
+        *[process_components(c, registry) for c in node.children]
+    )
 
-    - None or False: returns empty (attribute omitted)
-    - True: returns just the attribute name (boolean attribute)
-    - str: returns name="escaped_value"
-    """
-    if value is None or value is False:
-        return SafeHTML("")
-    if value is True:
-        return SafeHTML(name)
-    return SafeHTML(f'{name}="{escape(str(value))}"')
-
-
-async def html(template: Template) -> SafeHTML:
-    """
-    Process a t-string template into escaped HTML.
-
-    Automatically awaits coroutines and async iterables found in interpolations.
-    """
-    parts: list[str] = []
-
-    for item in template:
-        match item:
-            case str() as text:
-                parts.append(text)
-            case Interpolation(value, _, conversion, format_spec):
-                rendered = await _render_value(value, conversion, format_spec)
-                parts.append(rendered)
-
-    return SafeHTML("".join(parts).strip())
-
-
-async def render_html(result: Any) -> HTMLResponse:
-    """Render an Element/SafeHTML/Template to SafeHTML."""
-    if isinstance(result, SafeHTML):
-        return HTMLResponse(result)
-
-    if isinstance(result, Template):
-        content = await html(result)
-        return HTMLResponse(content)
-
-    if hasattr(result, "__html__"):
-        content = result.__html__()
-        if isawaitable(content):
-            content = await content
-        return HTMLResponse(SafeHTML(content))
-
-    return HTMLResponse("")
-
-
-async def _render_value(value: Any, conversion: str | None, format_spec: str) -> str:
-    """Render a single interpolated value, awaiting if necessary."""
-
-    # Await coroutines first
-    if isawaitable(value):
-        value = await value
-
-    # None renders as nothing
-    if value is None:
-        return ""
-
-    # Renderable objects (sync or async)
-    if hasattr(value, "__html__"):
-        result = value.__html__()
+    # Custom element? Call the component
+    if "-" in node.tag and node.tag in registry:
+        comp = registry[node.tag]
+        result = comp.fn(children=list(children), **node.attrs)
         if isawaitable(result):
-            return await result
-        return result
+            result = await result
 
-    # Nested templates
-    if isinstance(value, Template):
-        result = await html(value)
-        return result.__html__()
+        # If component returned a Template, convert to Node
+        if isinstance(result, Template):
+            result = html(result)
 
-    # Async iterables (async generators, etc.)
-    if isasyncgen(value) or isinstance(value, AsyncIterable):
-        parts = []
-        async for item in value:
-            parts.append(await _render_value(item, None, ""))
-        return "".join(parts)
+        # Recursively process in case component contains other custom elements
+        return await process_components(result, registry)
 
-    # Sync iterables (except strings/bytes)
-    if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
-        parts = []
-        for item in value:
-            parts.append(await _render_value(item, None, ""))
-        return "".join(parts)
-
-    # Apply conversion
-    if conversion == "r":
-        value = repr(value)
-    elif conversion == "s":
-        value = str(value)
-    elif conversion == "a":
-        value = ascii(value)
-
-    # Apply format spec
-    if format_spec:
-        value = format(value, format_spec)
-
-    # Escape and return
-    return escape(str(value))
+    # Regular element with processed children
+    return Element(node.tag, node.attrs, list(children))
 
 
-# Async caching utilities
-
-T = TypeVar("T")
-
-
-def cached(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
-    """
-    Cache an async component forever. Use for static content.
-
-    Usage:
-        @cached
-        async def Footer() -> SafeHTML:
-            return await html(t'<footer>...</footer>')
-    """
-    cache: dict[tuple, T] = {}
-
-    @wraps(func)
-    async def wrapper(*args, **kwargs) -> T:
-        key = (args, tuple(sorted(kwargs.items())))
-        if key not in cache:
-            cache[key] = await func(*args, **kwargs)
-        return cache[key]
-
-    setattr(wrapper, "cache_clear", lambda: cache.clear())
-    return wrapper
+async def render_html(template: Template) -> HTMLResponse:
+    """Render an Element/SafeHTML/Template to SafeHTML."""
+    content = html(template)
+    node = await process_components(content, {})
+    return HTMLResponse(str(node))
 
 
-def cached_lru(maxsize: int = 128):
-    """
-    Cache an async component with LRU eviction.
-
-    Usage:
-        @cached_lru(maxsize=64)
-        async def UserBadge(role: str) -> SafeHTML:
-            ...
-    """
-
-    def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
-        from collections import OrderedDict
-
-        cache: OrderedDict[tuple, T] = OrderedDict()
-
-        @wraps(func)
-        async def wrapper(*args, **kwargs) -> T:
-            key = (args, tuple(sorted(kwargs.items())))
-            if key in cache:
-                cache.move_to_end(key)
-                return cache[key]
-
-            result = await func(*args, **kwargs)
-            cache[key] = result
-
-            while len(cache) > maxsize:
-                cache.popitem(last=False)
-
-            return result
-
-        setattr(wrapper, "cache_clear", lambda: cache.clear())
-        setattr(wrapper, "cache_info", lambda: {"size": len(cache), "maxsize": maxsize})
-        return wrapper
-
-    return decorator
-
-
-def cached_ttl(seconds: int = 300):
-    """
-    Cache an async component with TTL expiration.
-
-    Usage:
-        @cached_ttl(seconds=60)
-        async def GlobalStats() -> SafeHTML:
-            stats = await fetch_expensive_stats()
-            ...
-    """
-    import time
-
-    def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
-        cache: dict[tuple, tuple[float, T]] = {}
-
-        @wraps(func)
-        async def wrapper(*args, **kwargs) -> T:
-            key = (args, tuple(sorted(kwargs.items())))
-            now = time.monotonic()
-
-            if key in cache:
-                expires, value = cache[key]
-                if now < expires:
-                    return value
-
-            result = await func(*args, **kwargs)
-            cache[key] = (now + seconds, result)
-            return result
-
-        setattr(wrapper, "cache_clear", lambda: cache.clear())
-        return wrapper
-
-    return decorator
+async def render(template: Template, registry: dict) -> HTMLResponse:
+    content = html(template)
+    node = await process_components(content, registry)
+    return HTMLResponse(str(node))

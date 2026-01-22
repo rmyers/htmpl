@@ -3,49 +3,70 @@ Pydantic-based form handling with HTML5 + server validation.
 
 Usage:
     from pydantic import BaseModel, Field, EmailStr
-    from htmpl.forms import FormRenderer
+    from htmpl.forms import BaseForm
 
-    class SignupSchema(BaseModel):
+    class SignupForm(BaseForm):
         username: str = Field(min_length=3, max_length=20)
         email: EmailStr
         password: str = Field(min_length=8)
         age: int = Field(ge=18, le=120)
 
-    form = FormRenderer(SignupSchema)
-    form.render(action="/signup")
-    form.render(action="/signup", values=data, errors=errors)
+    # Render the form
+    SignupForm.render(action="/signup")
+    SignupForm.render(action="/signup", values=data, errors=errors)
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypeVar, cast, get_origin, get_args
+from typing import Any, Literal,Protocol, TypeVar, cast, get_origin, get_args
 
 from pydantic import BaseModel, ValidationError
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
-
-from .elements import (
-    Element,
-    button,
-    div,
-    fieldset,
-    form,
-    input_,
-    label,
-    legend,
-    option,
-    select,
-    small,
-    textarea,
-)
+from tdom import Node, html
 
 
-# Choices can be list of [value, label] pairs
 Choices = list[list[str | int | bool | float]]
 Widget = Literal["input", "textarea", "select", "checkbox", "radio", "hidden"]
 T = TypeVar("T", bound=BaseModel)
-F = TypeVar("F", bound="BaseForm")
 
+
+class FormLayout(Protocol):
+    """Protocol for custom form layout functions."""
+
+    def __call__(
+        self,
+        form: type["BaseForm"],
+        *,
+        values: dict[str, Any],
+        errors: dict[str, str],
+        submit_text: str,
+        form_attrs: dict[str, Any],
+    ) -> Node: ...
+
+
+def default_layout(
+    form: type["BaseForm"],
+    *,
+    values: dict[str, Any],
+    errors: dict[str, str],
+    submit_text: str,
+    form_attrs: dict[str, Any],
+) -> Node:
+    """Default form layout - renders all fields in order with a submit button."""
+    configs = form.get_field_configs()
+
+    fields = [
+        form.render_field(name, values.get(name), errors.get(name))
+        for name in configs
+    ]
+
+    return html(t"""
+        <form {form_attrs}>
+            {fields}
+            <button type="submit">{submit_text}</button>
+        </form>
+    """)
 
 class FieldConfig(BaseModel):
     """Configuration for how a field should render."""
@@ -58,7 +79,6 @@ class FieldConfig(BaseModel):
     description: str | None = None
     role: str | None = None
 
-    # HTML5 validation attributes
     min: int | float | None = None
     max: int | float | None = None
     minlength: int | None = None
@@ -66,13 +86,8 @@ class FieldConfig(BaseModel):
     pattern: str | None = None
     step: int | float | None = None
 
-    # Select/radio options: [[value, label], ...]
     choices: Choices | None = None
-
-    # Textarea
     rows: int = 4
-
-    # Widget override
     widget: Widget | None = None
 
 
@@ -119,7 +134,9 @@ def _infer_input_type(python_type: type, field_name: str) -> str:
     return "text"
 
 
-def _extract_field_config(name: str, annotation: type, field_info: FieldInfo) -> FieldConfig:
+def _extract_field_config(
+    name: str, annotation: type, field_info: FieldInfo
+) -> FieldConfig:
     """Extract FieldConfig from Pydantic field."""
     origin = get_origin(annotation)
     if origin is type(None) or str(origin) == "typing.Union":
@@ -164,7 +181,9 @@ def _extract_field_config(name: str, annotation: type, field_info: FieldInfo) ->
     if input_type == "checkbox":
         widget = "checkbox"
 
-    required = field_info.default is PydanticUndefined and field_info.default_factory is None
+    required = (
+        field_info.default is PydanticUndefined and field_info.default_factory is None
+    )
 
     placeholder: str = ""
     if field_info.examples:
@@ -183,20 +202,25 @@ def _extract_field_config(name: str, annotation: type, field_info: FieldInfo) ->
     )
 
 
+def _attrs(**kwargs: Any) -> dict[str, Any]:
+    """Filter out None/False values, convert True to empty string for boolean attrs."""
+    return {
+        k.rstrip("_").replace("_", "-"): ("" if v is True else v)
+        for k, v in kwargs.items()
+        if v is not None and v is not False
+    }
+
+
 class BaseForm(BaseModel):
     """
     Base class for forms that can render themselves.
 
     Usage:
-        class LoginSchema(BaseForm):
+        class LoginForm(BaseForm):
             email: EmailStr
             password: str = Field(min_length=8)
 
-        # Render the form (class method)
-        LoginSchema.render(action="/login", values=values, errors=errors)
-
-        # Validate and create instance (normal Pydantic)
-        data = LoginSchema(**form_data)
+        LoginForm.render(action="/login", values=values, errors=errors)
     """
 
     @classmethod
@@ -205,7 +229,6 @@ class BaseForm(BaseModel):
         if not hasattr(cls, "_field_config_cache"):
             configs = {}
             for name, field_info in cls.model_fields.items():
-                # Use the annotation stored by Pydantic
                 annotation = field_info.annotation or str
                 configs[name] = _extract_field_config(name, annotation, field_info)
             cls._field_config_cache = configs
@@ -228,33 +251,20 @@ class BaseForm(BaseModel):
         *,
         values: dict[str, Any] | None = None,
         errors: dict[str, str] | None = None,
-        exclude: set[str] | None = None,
-        include: list[str] | None = None,
         submit_text: str = "Submit",
+        layout: FormLayout | None = None,
         **form_attrs,
-    ) -> Element:
-        """Render the complete form."""
-        values = values or {}
-        errors = errors or {}
-        exclude = exclude or set()
-        configs = cls.get_field_configs()
+    ) -> Node:
+        """Render the complete form using the specified layout."""
+        form_attrs = _attrs(action=action, method=method, **form_attrs)
+        layout_fn = layout or default_layout
 
-        if include:
-            field_names = [n for n in include if n in configs]
-        else:
-            field_names = [n for n in configs if n not in exclude]
-
-        fields = [
-            cls._render_field(configs[name], values.get(name), errors.get(name))
-            for name in field_names
-        ]
-
-        return form(
-            *fields,
-            button(submit_text, type="submit"),
-            action=action,
-            method=method,
-            **form_attrs,
+        return layout_fn(
+            cls,
+            values=values or {},
+            errors=errors or {},
+            submit_text=submit_text,
+            form_attrs=form_attrs,
         )
 
     @classmethod
@@ -263,7 +273,7 @@ class BaseForm(BaseModel):
         name: str,
         value: Any = None,
         error: str | None = None,
-    ) -> Element:
+    ) -> Node:
         """Render a single field with label wrapper."""
         configs = cls.get_field_configs()
         cfg = configs.get(name)
@@ -277,30 +287,32 @@ class BaseForm(BaseModel):
         name: str,
         value: Any = None,
         error: str | None = None,
-        **attrs,
-    ) -> Element:
+        **extra_attrs,
+    ) -> Node:
         """Render just the input element, no label wrapper."""
         configs = cls.get_field_configs()
         cfg = configs.get(name)
         if not cfg:
             raise ValueError(f"Unknown field: {name}")
-        return cls._render_input_only(cfg, value, error, attrs)
+        return cls._render_input_only(cfg, value, error, extra_attrs)
 
     @classmethod
-    def label_for(cls, name: str) -> Element:
+    def label_for(cls, name: str) -> Node:
         """Render just the label element for a field."""
         configs = cls.get_field_configs()
         cfg = configs.get(name)
         if not cfg:
             raise ValueError(f"Unknown field: {name}")
-        return label(cfg.label, for_=name)
+        label_text = cfg.label
+        return html(t'<label for="{name}">{label_text}</label>')
 
     @classmethod
-    def error_for(cls, name: str, errors: dict[str, str] | None = None) -> Element | None:
+    def error_for(cls, name: str, errors: dict[str, str] | None = None) -> Node | None:
         """Render error message for a field if present."""
         if not errors or name not in errors:
             return None
-        return small(errors[name], id=f"{name}-error", class_="error")
+        msg = errors[name]
+        return html(t'<small id="{name}-error" class="error">{msg}</small>')
 
     @classmethod
     def form_fields(
@@ -308,11 +320,13 @@ class BaseForm(BaseModel):
         *names: str,
         values: dict[str, Any] | None = None,
         errors: dict[str, str] | None = None,
-    ) -> list[Element]:
+    ) -> list[Node]:
         """Render multiple fields as a list."""
         values = values or {}
         errors = errors or {}
-        return [cls.render_field(name, values.get(name), errors.get(name)) for name in names]
+        return [
+            cls.render_field(name, values.get(name), errors.get(name)) for name in names
+        ]
 
     @classmethod
     def inline(
@@ -320,12 +334,10 @@ class BaseForm(BaseModel):
         *names: str,
         values: dict[str, Any] | None = None,
         errors: dict[str, str] | None = None,
-    ) -> Element:
+    ) -> Node:
         """Render fields inline in a grid row."""
-        return div(
-            cls.form_fields(*names, values=values, errors=errors),
-            class_="grid",
-        )
+        fields = cls.form_fields(*names, values=values, errors=errors)
+        return html(t'<div class="grid">{fields}</div>')
 
     @classmethod
     def group(
@@ -334,12 +346,15 @@ class BaseForm(BaseModel):
         *names: str,
         values: dict[str, Any] | None = None,
         errors: dict[str, str] | None = None,
-    ) -> Element:
+    ) -> Node:
         """Render fields in a fieldset with legend."""
-        return fieldset(
-            legend(title),
-            *cls.form_fields(*names, values=values, errors=errors),
-        )
+        fields = cls.form_fields(*names, values=values, errors=errors)
+        return html(t"""
+            <fieldset>
+                <legend>{title}</legend>
+                {fields}
+            </fieldset>
+        """)
 
     @classmethod
     def _render_input_only(
@@ -348,7 +363,7 @@ class BaseForm(BaseModel):
         value: Any,
         error: str | None,
         extra_attrs: dict[str, Any],
-    ) -> Element:
+    ) -> Node:
         """Render just the input/select/textarea element."""
         match cfg.widget:
             case "select":
@@ -358,7 +373,8 @@ class BaseForm(BaseModel):
             case "checkbox":
                 return cls._render_checkbox_input(cfg, value, error, extra_attrs)
             case "hidden":
-                return input_(type="hidden", name=cfg.name, value=str(value or ""), **extra_attrs)
+                name, val = cfg.name, str(value or "")
+                return html(t'<input type="hidden" name="{name}" value="{val}" />')
             case _:
                 return cls._render_input_element(cfg, value, error, extra_attrs)
 
@@ -369,27 +385,26 @@ class BaseForm(BaseModel):
         value: Any,
         error: str | None,
         extra_attrs: dict[str, Any],
-    ) -> Element:
+    ) -> Node:
         """Render an <input> element."""
-        attrs: dict[str, Any] = {
-            "type": cfg.type,
-            "name": cfg.name,
-            "id": cfg.name,
-            "value": str(value) if value is not None else "",
-            "placeholder": cfg.placeholder or None,
-            "required": cfg.required or None,
-            "minlength": str(cfg.minlength) if cfg.minlength else None,
-            "maxlength": str(cfg.maxlength) if cfg.maxlength else None,
-            "min": str(cfg.min) if cfg.min is not None else None,
-            "max": str(cfg.max) if cfg.max is not None else None,
-            "pattern": cfg.pattern,
-            "step": str(cfg.step) if cfg.step else None,
+        attrs = _attrs(
+            type=cfg.type,
+            name=cfg.name,
+            id=cfg.name,
+            value=str(value) if value is not None else "",
+            placeholder=cfg.placeholder or None,
+            required=cfg.required,
+            minlength=cfg.minlength,
+            maxlength=cfg.maxlength,
+            min=cfg.min,
+            max=cfg.max,
+            pattern=cfg.pattern,
+            step=cfg.step,
+            aria_invalid="true" if error else None,
+            aria_describedby=f"{cfg.name}-error" if error else None,
             **extra_attrs,
-        }
-        if error:
-            attrs["aria-invalid"] = "true"
-            attrs["aria-describedby"] = f"{cfg.name}-error"
-        return input_(**{k: v for k, v in attrs.items() if v is not None})
+        )
+        return html(t"<input {attrs} />")
 
     @classmethod
     def _render_textarea_input(
@@ -398,21 +413,21 @@ class BaseForm(BaseModel):
         value: Any,
         error: str | None,
         extra_attrs: dict[str, Any],
-    ) -> Element:
+    ) -> Node:
         """Render a <textarea> element."""
-        attrs: dict[str, Any] = {
-            "name": cfg.name,
-            "id": cfg.name,
-            "placeholder": cfg.placeholder or None,
-            "required": cfg.required or None,
-            "rows": str(cfg.rows),
-            "minlength": str(cfg.minlength) if cfg.minlength else None,
-            "maxlength": str(cfg.maxlength) if cfg.maxlength else None,
+        attrs = _attrs(
+            name=cfg.name,
+            id=cfg.name,
+            placeholder=cfg.placeholder or None,
+            required=cfg.required,
+            rows=cfg.rows,
+            minlength=cfg.minlength,
+            maxlength=cfg.maxlength,
+            aria_invalid="true" if error else None,
             **extra_attrs,
-        }
-        if error:
-            attrs["aria-invalid"] = "true"
-        return textarea(str(value or ""), **{k: v for k, v in attrs.items() if v is not None})
+        )
+        content = value or ""
+        return html(t"<textarea {attrs}>{content}</textarea>")
 
     @classmethod
     def _render_select_input(
@@ -421,26 +436,33 @@ class BaseForm(BaseModel):
         value: Any,
         error: str | None,
         extra_attrs: dict[str, Any],
-    ) -> Element:
+    ) -> Node:
         """Render a <select> element."""
         str_value = str(value) if value is not None else ""
+        attrs = _attrs(
+            name=cfg.name,
+            id=cfg.name,
+            required=cfg.required,
+            aria_invalid="true" if error else None,
+            **extra_attrs,
+        )
+
         options = [
-            option(lbl, value=val, selected=(val == str_value) or None)
+            cls._render_option("", "Select...", selected=not str_value, disabled=True)
+        ] + [
+            cls._render_option(str(val), str(lbl), selected=(str(val) == str_value))
             for val, lbl in (cfg.choices or [])
         ]
-        attrs: dict[str, Any] = {
-            "name": cfg.name,
-            "id": cfg.name,
-            "required": cfg.required or None,
-            **extra_attrs,
-        }
-        if error:
-            attrs["aria-invalid"] = "true"
-        return select(
-            option("Select...", value="", disabled=True, selected=(not str_value) or None),
-            *options,
-            **{k: v for k, v in attrs.items() if v is not None},
-        )
+
+        return html(t"<select {attrs}>{options}</select>")
+
+    @classmethod
+    def _render_option(
+        cls, value: str, label: str, selected: bool = False, disabled: bool = False
+    ) -> Node:
+        """Render an <option> element."""
+        attrs = _attrs(value=value, selected=selected, disabled=disabled)
+        return html(t"<option {attrs}>{label}</option>")
 
     @classmethod
     def _render_checkbox_input(
@@ -449,20 +471,21 @@ class BaseForm(BaseModel):
         value: Any,
         error: str | None,
         extra_attrs: dict[str, Any],
-    ) -> Element:
+    ) -> Node:
         """Render a checkbox <input> element."""
-        return input_(
+        attrs = _attrs(
             type="checkbox",
             name=cfg.name,
             id=cfg.name,
-            checked=bool(value) or None,
-            required=cfg.required or None,
-            role=cfg.role or None,
+            checked=bool(value),
+            required=cfg.required,
+            role=cfg.role,
             **extra_attrs,
         )
+        return html(t"<input {attrs} />")
 
     @classmethod
-    def _render_field(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
+    def _render_field(cls, cfg: FieldConfig, value: Any, error: str | None) -> Node:
         """Render a field based on its configuration."""
         match cfg.widget:
             case "select":
@@ -474,70 +497,88 @@ class BaseForm(BaseModel):
             case "radio":
                 return cls._render_radio(cfg, value, error)
             case "hidden":
-                return input_(type="hidden", name=cfg.name, value=str(value or ""))
+                name, val = cfg.name, str(value or "")
+                return html(t'<input type="hidden" name="{name}" value="{val}" />')
             case _:
                 return cls._render_input(cfg, value, error)
 
     @classmethod
-    def _render_input(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
-        return label(
-            cfg.label,
-            cls._render_input_element(cfg, value, error, {}),
-            small(cfg.description) if cfg.description and not error else None,
-            small(error, id=f"{cfg.name}-error", class_="error") if error else None,
-        )
+    def _render_hint(cls, cfg: FieldConfig, error: str | None) -> Node | None:
+        """Render description or error hint."""
+        if error:
+            return html(t'<small class="error">{error}</small>')
+        if cfg.description:
+            desc = cfg.description
+            return html(t"<small>{desc}</small>")
+        return None
 
     @classmethod
-    def _render_textarea(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
-        return label(
-            cfg.label,
-            cls._render_textarea_input(cfg, value, error, {}),
-            small(cfg.description) if cfg.description and not error else None,
-            small(error, class_="error") if error else None,
-        )
+    def _render_input(cls, cfg: FieldConfig, value: Any, error: str | None) -> Node:
+        """Render a labeled input field."""
+        label_text = cfg.label
+        input_el = cls._render_input_element(cfg, value, error, {})
+        hint = cls._render_hint(cfg, error)
+        return html(t"<label>{label_text}{input_el}{hint}</label>")
 
     @classmethod
-    def _render_select(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
-        return label(
-            cfg.label,
-            cls._render_select_input(cfg, value, error, {}),
-            small(cfg.description) if cfg.description and not error else None,
-            small(error, class_="error") if error else None,
-        )
+    def _render_textarea(cls, cfg: FieldConfig, value: Any, error: str | None) -> Node:
+        """Render a labeled textarea field."""
+        label_text = cfg.label
+        textarea_el = cls._render_textarea_input(cfg, value, error, {})
+        hint = cls._render_hint(cfg, error)
+        return html(t"<label>{label_text}{textarea_el}{hint}</label>")
 
     @classmethod
-    def _render_checkbox(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
-        return label(
-            cls._render_checkbox_input(cfg, value, error, {}),
-            cfg.label,
-            small(cfg.description) if cfg.description and not error else None,
-            small(error, class_="error") if error else None,
-        )
+    def _render_select(cls, cfg: FieldConfig, value: Any, error: str | None) -> Node:
+        """Render a labeled select field."""
+        label_text = cfg.label
+        select_el = cls._render_select_input(cfg, value, error, {})
+        hint = cls._render_hint(cfg, error)
+        return html(t"<label>{label_text}{select_el}{hint}</label>")
 
     @classmethod
-    def _render_radio(cls, cfg: FieldConfig, value: Any, error: str | None) -> Element:
+    def _render_checkbox(cls, cfg: FieldConfig, value: Any, error: str | None) -> Node:
+        """Render a labeled checkbox field."""
+        label_text = cfg.label
+        checkbox_el = cls._render_checkbox_input(cfg, value, error, {})
+        hint = cls._render_hint(cfg, error)
+        return html(t"<label>{checkbox_el}{label_text}{hint}</label>")
+
+    @classmethod
+    def _render_radio(cls, cfg: FieldConfig, value: Any, error: str | None) -> Node:
+        """Render a radio group in a fieldset."""
         str_value = str(value) if value is not None else ""
+        label_text = cfg.label
+        hint = cls._render_hint(cfg, error)
+
         radios = [
-            label(
-                input_(
-                    type="radio",
-                    name=cfg.name,
-                    id=f"{cfg.name}_{val}",
-                    value=val,
-                    checked=(val == str_value) or None,
-                    required=cfg.required or None,
-                ),
-                lbl,
-            )
+            cls._render_radio_option(cfg.name, str(val), str(lbl), str(val) == str_value, cfg.required)
             for val, lbl in (cfg.choices or [])
         ]
 
-        return fieldset(
-            legend(cfg.label),
-            *radios,
-            small(cfg.description) if cfg.description and not error else None,
-            small(error, class_="error") if error else None,
+        return html(t"""
+            <fieldset>
+                <legend>{label_text}</legend>
+                {radios}
+                {hint}
+            </fieldset>
+        """)
+
+    @classmethod
+    def _render_radio_option(
+        cls, name: str, value: str, label: str, checked: bool, required: bool
+    ) -> Node:
+        """Render a single radio option."""
+        input_id = f"{name}_{value}"
+        attrs = _attrs(
+            type="radio",
+            name=name,
+            id=input_id,
+            value=value,
+            checked=checked,
+            required=required,
         )
+        return html(t"<label><input {attrs} />{label}</label>")
 
 
 def parse_form_errors(error: ValidationError) -> dict[str, str]:
