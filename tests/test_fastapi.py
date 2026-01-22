@@ -405,7 +405,7 @@ class TestAssetIntegration:
         async def partial():
             # No use_layout = no collector = no asset tracking
             btn = Button("Click")
-            return await render_html(btn)
+            return await render_html(t'{btn}')
 
         app.include_router(router)
         return app

@@ -38,24 +38,6 @@ class SafeHTML:
         return self.content.encode(encoding, errors)
 
 
-async def render_html(result: Any) -> HTMLResponse:
-    """Render an Element/SafeHTML/Template to SafeHTML."""
-    if isinstance(result, SafeHTML):
-        return HTMLResponse(result)
-
-    if isinstance(result, Template):
-        content = html(result)
-        return HTMLResponse(str(content))
-
-    if hasattr(result, "__html__"):
-        content = result.__html__()
-        if isawaitable(content):
-            content = await content
-        return HTMLResponse(SafeHTML(content))
-
-    return HTMLResponse("")
-
-
 async def process_components(node: Node, registry: dict[str, "Component"]) -> Node:
     """Walk tree, replace custom elements with registered component calls."""
     if isinstance(node, Fragment):
@@ -90,8 +72,14 @@ async def process_components(node: Node, registry: dict[str, "Component"]) -> No
     return Element(node.tag, node.attrs, list(children))
 
 
+async def render_html(template: Template) -> HTMLResponse:
+    """Render an Element/SafeHTML/Template to SafeHTML."""
+    content = html(template)
+    node = await process_components(content, {})
+    return HTMLResponse(str(node))
+
+
 async def render(template: Template, registry: dict) -> HTMLResponse:
     content = html(template)
     node = await process_components(content, registry)
-    print(f"{node!r}")
     return HTMLResponse(str(node))

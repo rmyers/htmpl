@@ -17,7 +17,6 @@ from htmpl.assets import Bundles, component, registry
 from htmpl.forms import BaseForm
 from htmpl.fastapi import ParsedForm, use_component, use_bundles, add_assets_routes, is_htmx, use_form
 
-
 router = APIRouter()
 
 
@@ -109,7 +108,7 @@ def LeaderboardRow(user: User, rank: int):
     </tr>'''
 
 
-@component(css={"/static/css/foo.css"})
+@component('leader-board', css={"/static/css/foo.css"})
 async def LeaderBoardTable():
     def _lb(users: list[User]):
         rows = [LeaderboardRow(u, i + 1) for i, u in enumerate(users)]
@@ -172,7 +171,7 @@ def ButtonLink(text: str, href: str, *, variant: str = "primary"):
     return t'<a {attrs}>{text}</a>'
 
 
-@component(css={"/static/css/foo.css"})
+@component('search-input', css={"/static/css/foo.css"})
 async def SearchInput() -> Callable:
     def search_inpt(name: str, *, src: str, target: str, placeholder: str = "Search..."):
         return t'''<input
@@ -196,7 +195,7 @@ def LazyLoad(src: str, *, placeholder=None):
 # Components
 
 
-@component()
+@component('app-nav')
 async def AppNav():
     user = await get_current_user()
     items = [("Leaderboard", "/board"), ("Projects", "/projects"), ("About", "/about")]
@@ -228,7 +227,7 @@ async def AppNav():
 # Layout - single function, no nesting
 
 
-@component(css={"/static/css/app.css"})
+@component('app-page', css={"/static/css/app.css"})
 async def AppPage(
     bundles: Annotated[Bundles, Depends(use_bundles)],
     navbar: Annotated[SafeHTML, use_component(AppNav)],
@@ -302,7 +301,7 @@ async def leaderboard(
     # HTMX partial - just the rows
     if is_htmx(request):
         rows = [LeaderboardRow(u, i + 1) for i, u in enumerate(users)]
-        return await render_html(rows)
+        return await render_html(t"{rows}")
 
     return await render_html(
         t'''<{page} title="Leaderboard">
@@ -355,7 +354,7 @@ async def recent_commits():
     user = await get_current_user()
     commits = await get_recent_commits(user.id) if user else []
     cards = [CommitCard(msg, repo, pts, ts) for msg, repo, pts, ts in commits]
-    return await render_html(cards)
+    return await render_html(t"{cards}")
 
 
 # Forms

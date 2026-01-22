@@ -21,14 +21,14 @@ from fastapi import (
 )
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
+from starlette.types import ASGIApp, Receive, Scope, Send
+from tdom import Node
 
 from .assets import (
     registry,
     AssetCollector,
-    Bundles,
     ComponentFunc,
 )
-from .core import SafeHTML
 from .forms import BaseForm, parse_form_errors
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def is_htmx(request: Request) -> bool:
     return request.headers.get("HX-Request") == "true"
 
 
-def use_bundles(request: Request) -> Bundles:
+def use_bundles(request: Request) -> AssetCollector:
     """Dependency that provides bundles for asset collection.
 
     Note: This dependency should be added before components
@@ -56,7 +56,9 @@ def use_bundles(request: Request) -> Bundles:
     """
     if not hasattr(request.state, "htmpl_collector"):
         request.state.htmpl_collector = AssetCollector()
-    return Bundles(_collector=request.state.htmpl_collector)
+
+    assert isinstance(request.state.htmpl_collector, AssetCollector)
+    return request.state.htmpl_collector
 
 
 class ParsedForm(BaseModel, Generic[T]):
@@ -142,7 +144,7 @@ def use_component(
             )
         )
 
-    async def render(request: Request, **kwargs) -> SafeHTML | None:
+    async def render(request: Request, **kwargs) -> Node | None:
         # Register component's assets if collector exists
         if collector := getattr(request.state, "htmpl_collector", None):
             collector.add_by_name(comp_name)
@@ -154,13 +156,26 @@ def use_component(
     return Depends(render)
 
 
+class AssetCollectorMiddleware:
+    """Adds a fresh AssetCollector to request.state for each request."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            scope.setdefault("state", {})
+            scope["state"]["htmpl_collector"] = AssetCollector()
+
+        await self.app(scope, receive, send)
+
+
 def add_assets_routes(
     app: FastAPI, assets_path: str = "/assets", bundle_dir: str = "dist/bundles"
 ) -> FastAPI:
-    router = APIRouter()
 
-    @router.websocket("/__hmr")
-    async def hmr_websocket(ws: WebSocket):
+    @app.websocket("/__hmr")
+    async def _hmr_websocket(ws: WebSocket) -> Any:
         if registry._watch_task is None:
             return await ws.close(reason="HMR not enabled")
 
@@ -172,7 +187,8 @@ def add_assets_routes(
         except WebSocketDisconnect:
             registry.remove_ws_client(ws)
 
-    app.include_router(router)
+    app.add_middleware(AssetCollectorMiddleware)
+
     app.mount(
         assets_path,
         StaticFiles(directory=Path(bundle_dir), check_dir=False),

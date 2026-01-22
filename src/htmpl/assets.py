@@ -392,16 +392,23 @@ class AssetCollector:
     js: OrderedDict[str, int] = field(default_factory=OrderedDict)
     py: OrderedDict[str, int] = field(default_factory=OrderedDict)
 
-    def add_by_name(self, name: str) -> None:
+    def add_by_name(self, name: str) -> Component | None:
         """Add assets by component name."""
         logger.info(f"adding asset by name: {name}")
-        if comp := self._registry.get_component(name):
-            if _css := comp.get("css"):
+        comp = self._registry.components.get(name)
+        if comp is None:
+            logger.warning(f"Component {name} was not found in registry")
+            return None
+
+        if bundles := self._registry.get_component(name):
+            if _css := bundles.get("css"):
                 self.css[_css] = 1
-            if _js := comp.get("js"):
+            if _js := bundles.get("js"):
                 self.js[_js] = 1
-            if _py := comp.get("py"):
+            if _py := bundles.get("py"):
                 self.py[_py] = 1
+
+        return comp
 
     def bundles(self) -> ResolvedBundles:
         """Resolve collected assets to bundle URLs."""
