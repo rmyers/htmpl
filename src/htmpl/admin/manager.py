@@ -10,6 +10,7 @@ Architecture:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 import subprocess
@@ -86,49 +87,78 @@ class ManagerConfig:
 # ============================================================================
 # Template Repository Management
 # ============================================================================
-
 @dataclass
 class TemplateRepo:
     """Manages local checkout of template library."""
     path: Path
     remote: str = TEMPLATE_REPO
 
-    def ensure_checkout(self) -> None:
+    # Env to prevent git from prompting for credentials
+    GIT_ENV = {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+    }
+
+    async def _run_git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        """Run git command async without blocking, no TTY prompts."""
+        import asyncio
+        import os
+
+        env = {**os.environ, **self.GIT_ENV}
+        proc = await asyncio.create_subprocess_exec(
+            "git", *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,  # No input possible
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+
+        result = subprocess.CompletedProcess(
+            args=["git", *args],
+            returncode=proc.returncode or 0,
+            stdout=stdout.decode() if stdout else "",
+            stderr=stderr.decode() if stderr else "",
+        )
+
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, result.args, result.stdout, result.stderr
+            )
+        return result
+
+    async def ensure_checkout(self) -> None:
         """Clone if not exists, fetch if it does."""
         if not self.path.exists():
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(
-                ["git", "clone", "--depth=1", self.remote, str(self.path)],
-                check=True,
-            )
+            await self._run_git("clone", "--depth=1", self.remote, str(self.path))
         else:
-            subprocess.run(
-                ["git", "-C", str(self.path), "fetch", "--tags"],
-                check=True,
-            )
+            # Fetch but don't fail if offline
+            await self._run_git("-C", str(self.path), "fetch", "--tags", check=False)
 
-    def current_version(self) -> str | None:
+    async def current_version(self) -> str | None:
         """Get current checked out tag/commit."""
-        result = subprocess.run(
-            ["git", "-C", str(self.path), "describe", "--tags", "--always"],
-            capture_output=True, text=True,
-        )
-        return result.stdout.strip() if result.returncode == 0 else None
+        try:
+            result = await self._run_git(
+                "-C", str(self.path), "describe", "--tags", "--always", check=False
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        except asyncio.TimeoutError:
+            return None
 
-    def available_versions(self) -> list[str]:
+    async def available_versions(self) -> list[str]:
         """List available tags."""
-        result = subprocess.run(
-            ["git", "-C", str(self.path), "tag", "-l", "--sort=-v:refname"],
-            capture_output=True, text=True, check=True,
-        )
-        return [t for t in result.stdout.strip().split("\n") if t]
+        try:
+            result = await self._run_git(
+                "-C", str(self.path), "tag", "-l", "--sort=-v:refname", check=False
+            )
+            return [t for t in result.stdout.strip().split("\n") if t]
+        except asyncio.TimeoutError:
+            return []
 
-    def checkout_version(self, version: str) -> None:
+    async def checkout_version(self, version: str) -> None:
         """Checkout specific tag."""
-        subprocess.run(
-            ["git", "-C", str(self.path), "checkout", version],
-            check=True,
-        )
+        await self._run_git("-C", str(self.path), "checkout", version)
 
     def list_plugins(self) -> list["PluginInfo"]:
         """Discover available plugins from templates directory."""
@@ -141,7 +171,6 @@ class TemplateRepo:
             if plugin_path.is_dir() and (plugin_path / "copier.yml").exists():
                 plugins.append(PluginInfo.from_path(plugin_path))
         return plugins
-
 
 @dataclass
 class PluginInfo:
@@ -233,6 +262,7 @@ class CopierRunner:
 # Authentication
 # ============================================================================
 
+
 class SessionManager:
     """Simple token-based session for local dev server."""
 
@@ -242,7 +272,7 @@ class SessionManager:
 
     def generate_password(self) -> str:
         """Generate a new password and session token."""
-        self._password = secrets.token_urlsafe(16)
+        self._password = secrets.token_urlsafe(12)
         self.token = secrets.token_urlsafe(32)
         return self._password
 
@@ -373,7 +403,7 @@ async def ManagerLayout(
 
 
 class LoginForm(BaseForm):
-    password: str = Field(description="You should find the password to connect on your terminal")
+    code: str = Field(description="Verify the code displayed on your terminal")
 
 
 def login_form(**kwargs):
@@ -386,6 +416,15 @@ def login_form(**kwargs):
     {LoginForm.render(submit_text="Unlock", **kwargs)}
 </article>
 </body></html>'''
+
+
+def handle_app_exception(request: Request, exc: HTTPException) -> RedirectResponse:
+    if exc.status_code == 401:
+        return RedirectResponse('/login')
+
+    logger.error(f"Unknown error {exc.status_code}: {exc.detail}")
+    return RedirectResponse('/error')
+
 
 # ============================================================================
 # Application Factory
@@ -404,6 +443,7 @@ def create_app(config: ManagerConfig) -> FastAPI:
         await registry.teardown()
 
     app = FastAPI(title="htmpl Manager", lifespan=lifespan)
+    app.add_exception_handler(401, handle_app_exception) # type: ignore
 
     # ---- Public routes ----
 
@@ -416,7 +456,7 @@ def create_app(config: ManagerConfig) -> FastAPI:
         if parsed.errors or not parsed.data:
             return await render_html(t"{login_form(errors=parsed.errors, values=parsed.values)}")
 
-        if token := session_mgr.create_session(parsed.data.password):
+        if token := session_mgr.create_session(parsed.data.code):
             response = RedirectResponse("/", status_code=303)
             response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="strict")
             return response
@@ -430,9 +470,9 @@ def create_app(config: ManagerConfig) -> FastAPI:
         _: Annotated[None, Depends(require_auth)],
         layout: Annotated[Callable, use_component(ManagerLayout)],
     ):
-        # repo.ensure_checkout()
-        version = repo.current_version() or "unknown"
-        available = repo.available_versions()
+        await repo.ensure_checkout()
+        version = await repo.current_version() or "unknown"
+        available = await repo.available_versions()
         latest = available[0] if available else "unknown"
         plugins = repo.list_plugins()
         installed_count = len(config.installed_plugins)
@@ -523,12 +563,12 @@ def create_app(config: ManagerConfig) -> FastAPI:
 
     @app.post("/api/templates/update")
     async def update_templates(_: Annotated[None, Depends(require_auth)]):
-        repo.ensure_checkout()
-        current = repo.current_version()
-        available = repo.available_versions()
+        await repo.ensure_checkout()
+        current = await repo.current_version()
+        available = await repo.available_versions()
 
         if available and available[0] != current:
-            repo.checkout_version(available[0])
+            await repo.checkout_version(available[0])
             return await render_html(Alert(f"Updated to {available[0]} from {current}"))
         return await render_html(Alert(f"Already up to date ({current})"))
 
@@ -567,8 +607,6 @@ def serve(port: int, host: str, project_root: str):
     """Start the management server."""
     import uvicorn
 
-    logging.basicConfig(level=logging.INFO)
-
     config = ManagerConfig.load(Path(project_root).resolve())
     password = session_mgr.generate_password()
 
@@ -587,18 +625,23 @@ def serve(port: int, host: str, project_root: str):
 @click.option("--version", "-v", help="Specific version to checkout")
 def update(version: str | None):
     """Update local template checkout."""
-    config = ManagerConfig.load(Path.cwd())
-    repo = TemplateRepo(config.template_checkout)
-    repo.ensure_checkout()
+    import asyncio
 
-    if version:
-        repo.checkout_version(version)
-        click.echo(f"Checked out {version}")
-    else:
-        available = repo.available_versions()
-        if available:
-            repo.checkout_version(available[0])
-            click.echo(f"Updated to latest: {available[0]}")
+    async def _update():
+        config = ManagerConfig.load(Path.cwd())
+        repo = TemplateRepo(config.template_checkout)
+        await repo.ensure_checkout()
+
+        if version:
+            await repo.checkout_version(version)
+            click.echo(f"Checked out {version}")
+        else:
+            available = await repo.available_versions()
+            if available:
+                await repo.checkout_version(available[0])
+                click.echo(f"Updated to latest: {available[0]}")
+
+    asyncio.run(_update())
 
 
 @cli.command()
@@ -606,42 +649,51 @@ def update(version: str | None):
 @click.option("--dry-run", is_flag=True, help="Preview changes without applying")
 def install(plugin_name: str, dry_run: bool):
     """Install a plugin from templates."""
-    config = ManagerConfig.load(Path.cwd())
-    repo = TemplateRepo(config.template_checkout)
-    repo.ensure_checkout()
+    import asyncio
 
-    plugins = repo.list_plugins()
-    plugin = next((p for p in plugins if p.name == plugin_name), None)
+    async def _install():
+        config = ManagerConfig.load(Path.cwd())
+        repo = TemplateRepo(config.template_checkout)
+        await repo.ensure_checkout()
 
-    if not plugin:
-        available = ", ".join(p.name for p in plugins)
-        raise click.ClickException(f"Plugin '{plugin_name}' not found. Available: {available}")
+        plugins = repo.list_plugins()
+        plugin = next((p for p in plugins if p.name == plugin_name), None)
 
-    copier = CopierRunner(config)
-    result = copier.install_plugin(plugin, dry_run=dry_run)
+        if not plugin:
+            available = ", ".join(p.name for p in plugins)
+            raise click.ClickException(f"Plugin '{plugin_name}' not found. Available: {available}")
 
-    if result.returncode == 0:
-        if not dry_run:
-            config.installed_plugins.append(plugin_name)
-            config.save()
-        click.echo(result.stdout)
-        click.secho("✓ Success" if not dry_run else "Preview complete", fg="green")
-    else:
-        click.secho(f"Failed: {result.stderr}", fg="red")
+        copier = CopierRunner(config)
+        result = copier.install_plugin(plugin, dry_run=dry_run)
+
+        if result.returncode == 0:
+            if not dry_run:
+                config.installed_plugins.append(plugin_name)
+                config.save()
+            click.echo(result.stdout)
+            click.secho("✓ Success" if not dry_run else "Preview complete", fg="green")
+        else:
+            click.secho(f"Failed: {result.stderr}", fg="red")
+
+    asyncio.run(_install())
 
 
 @cli.command("list")
 def list_plugins():
     """List available plugins."""
-    config = ManagerConfig.load(Path.cwd())
-    repo = TemplateRepo(config.template_checkout)
-    repo.ensure_checkout()
+    import asyncio
 
-    plugins = repo.list_plugins()
-    for p in plugins:
-        status = "✓" if p.name in config.installed_plugins else " "
-        click.echo(f"  [{status}] {p.name:20} - {p.description}")
+    async def _list():
+        config = ManagerConfig.load(Path.cwd())
+        repo = TemplateRepo(config.template_checkout)
+        await repo.ensure_checkout()
 
+        plugins = repo.list_plugins()
+        for p in plugins:
+            status = "✓" if p.name in config.installed_plugins else " "
+            click.echo(f"  [{status}] {p.name:20} - {p.description}")
+
+    asyncio.run(_list())
 
 if __name__ == "__main__":
     cli()
