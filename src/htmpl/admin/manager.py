@@ -36,7 +36,7 @@ logger = logging.getLogger("htmpl.admin")
 # Configuration
 # ============================================================================
 
-TEMPLATE_REPO = "https://github.com/julython/htmpl-templates.git"
+TEMPLATE_REPO = "git@github.com:rmyers/cuneus.git"
 CACHE_DIR = Path.home() / ".cache" / "htmpl-manager"
 TEMPLATES_DIR = CACHE_DIR / "templates"
 SESSION_COOKIE = "htmpl_session"
