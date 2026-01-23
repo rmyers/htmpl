@@ -13,7 +13,7 @@ import subprocess
 
 import click
 
-TEMPLATE_REPO = "https://github.com/rmyers/htmpl-template.git"
+TEMPLATE_REPO = "gh:rmyers/htmpl-template.git"
 
 
 @click.group()
