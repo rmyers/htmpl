@@ -11,7 +11,8 @@ from typing import Annotated, Any, Callable
 from fastapi import APIRouter, Depends, FastAPI, Request
 from pydantic import BaseModel, Field, EmailStr, field_validator
 
-from htmpl import html, SafeHTML, render_html
+from tdom import html
+from htmpl.core import SafeHTML, render_html
 from htmpl.assets import Bundles, component, registry
 
 from htmpl.forms import BaseForm, reset_form

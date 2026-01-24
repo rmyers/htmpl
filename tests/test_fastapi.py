@@ -12,15 +12,15 @@ from fastapi.testclient import TestClient
 from pydantic import Field, EmailStr
 
 from tdom import html
-from htmpl import forms, SafeHTML, render_html, render
 from htmpl.assets import (
     Bundles,
     AssetCollector,
     component,
     registry,
 )
+from htmpl.core import SafeHTML, render_html, render
 from htmpl.fastapi import ParsedForm, use_form, use_component, use_bundles, is_htmx
-
+from htmpl import forms
 
 @pytest.fixture(scope="function")
 async def setup_registry():

@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field, ValidationError, EmailStr
 
 from htmpl.forms import (
     BaseForm,
-    FieldConfig,
     parse_form_errors,
     _label_from_name,
     _infer_input_type,

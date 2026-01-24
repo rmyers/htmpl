@@ -3,7 +3,7 @@ Tests for htmpl core functionality.
 """
 
 import pytest
-from htmpl import SafeHTML, render
+from htmpl.core import SafeHTML, render
 from tdom import Node
 
 from htmpl.assets import Component, component
