@@ -12,6 +12,7 @@ from __future__ import annotations
 import subprocess
 
 import click
+import copier
 
 TEMPLATE_REPO = "gh:rmyers/htmpl-template.git"
 
@@ -28,7 +29,6 @@ def cli():
 @click.option("--version", "-v", help="Template version (git tag)")
 def init(dest: str, version: str | None):
     """Create a new htmpl project."""
-    import copier
 
     copier.run_copy(TEMPLATE_REPO, dest, vcs_ref=version)
     click.echo(f"\n✓ Created htmpl project in {dest}")
@@ -40,8 +40,6 @@ def init(dest: str, version: str | None):
 @click.option("--version", "-v", help="Update to specific version (default: latest)")
 def update(version: str | None):
     """Update project from upstream template."""
-    import copier
-
     copier.run_update(".", vcs_ref=version)
     click.echo("\n✓ Project updated")
 
