@@ -29,9 +29,14 @@
 base_dir ?= $(shell git rev-parse --show-toplevel)
 app_dir ?= $(shell git rev-parse --show-prefix)
 conda_env_dir ?= $(base_dir)/env
+conda_bin ?= $(conda_env_dir)/bin
 
 # Export environment variables
 export PYTHONPATH = $(base_dir)/src
+# Tell pip not to install any deps conda lock does that
+export PIP_NO_DEPS = 1
+# Tell pip not to create a venv to build... just use the existing env tools
+export PIP_NO_BUILD_ISOLATION=1
 
 # Setup conda lock
 CONDA_EXE ?= conda
@@ -62,6 +67,7 @@ lock-force: check-env  ## Force lock Conda dependencies in project
 
 setup: check-env $(CONDA_LOCK_FILE)  ## Setup local environment
 	$(CONDA_LOCK) install -E all --log-level ERROR -p $(conda_env_dir) $(CONDA_LOCK_FILE)
+	$(conda_bin)/pip install -e .
 
 type-check:  ## Run mypy to check static types
 	$(conda_run) mypy $(args)

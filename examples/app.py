@@ -9,12 +9,12 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Callable
 
 from fastapi import APIRouter, Depends, FastAPI, Request
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, field_validator
 
 from htmpl import html, SafeHTML, render_html
 from htmpl.assets import Bundles, component, registry
 
-from htmpl.forms import BaseForm
+from htmpl.forms import BaseForm, reset_form
 from htmpl.fastapi import ParsedForm, use_component, use_bundles, add_assets_routes, is_htmx, use_form
 
 router = APIRouter()
@@ -369,34 +369,46 @@ class SettingsForm(BaseForm):
     )
     notify_mentions: bool
 
+    @field_validator('username', mode='after')
+    @classmethod
+    def validate_username(cls, username: str) -> str:
+        if username not in ["bob", "dobbs"]:
+            raise ValueError('Username must be one of "bob", "dobbs"')
+        return username
 
-def settings_template(form_class: type[SettingsForm], values: dict, errors: dict):
-    form_html = form_class.render(action="/settings", values=values, errors=errors, submit_text="Save")
+
+
+def settings_template(form: ParsedForm[SettingsForm], values: dict | None = None):
     return t'''
     <h1>Settings</h1>
-    {form_html}
+    {form.render(values=values)}
+    '''
+
+
+def success_page(data: SettingsForm):
+    return t'''
+    {reset_form}
+    <h1>Settings</h1>
+    <h2>Welcome, {data.email}!</h2>
     '''
 
 
 @router.get("/settings")
-async def settings_get(page: Annotated[Any, use_component(AppPage)]):
-    user = await get_current_user()
-    values = {"username": user.username, "email": "bob@example.com"} if user else {}
-    form = settings_template(SettingsForm, values, {})
-    return await render_html(t'<{page} title="Settings">{form}</{page}>')
-
-
 @router.post("/settings")
 async def settings_post(
     page: Annotated[Any, use_component(AppPage)],
-    parsed: Annotated[ParsedForm[SettingsForm], use_form(SettingsForm)]
+    form: Annotated[ParsedForm[SettingsForm], use_form(SettingsForm, submit_text="Update")]
 ):
-    if parsed.errors:
-        rendered = SettingsForm.render(values=parsed.values, errors=parsed.errors, submit_text="Update")
-        return await render_html(t"<{page}>{rendered}</{page}>")
+    if form.errors:
+        return await render_html(t"<{page}>{settings_template(form)}</{page}>")
 
-    assert parsed.data is not None
-    return await render_html(t"<{page}><h1>Welcome, {parsed.data.email}!</h1></{page}>")
+    if form.data is not None:
+        return await render_html(t"<{page}>{success_page(form.data)}</{page}>")
+
+    user = await get_current_user()
+    values = {"username": user.username, "email": "bob@example.com"} if user else {}
+    return await render_html(t"<{page}>{settings_template(form, values)}</{page}>")
+
 
 
 # App setup

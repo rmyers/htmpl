@@ -1,6 +1,6 @@
 [project]
 name = "htmpl"
-version = "0.4.0"
+version = "0.4.1"
 description = "Type-safe HTML templating with Python 3.14 t-strings"
 readme = "README.md"
 license = "MIT"
@@ -11,14 +11,13 @@ classifiers = [
   "Development Status :: 3 - Alpha",
   "Framework :: FastAPI",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3.14",
   "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
   "Topic :: Text Processing :: Markup :: HTML",
   "Typing :: Typed",
 ]
 
-dependencies = ["tdom"]
+dependencies = ["tdom", "click", "copier"]
 
 [project.optional-dependencies]
 all = ["fastapi>=0.115", "pydantic>=2.0"]
@@ -36,9 +35,12 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/julython/htmpl"
-Documentation = "https://github.com/julython/htmpl#readme"
-Repository = "https://github.com/julython/htmpl"
+Homepage = "https://github.com/rmyers/htmpl"
+Documentation = "https://github.com/rmyers/htmpl#readme"
+Repository = "https://github.com/rmyers/htmpl"
+
+[project.scripts]
+htmpl = "htmpl.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -82,9 +84,11 @@ channels = ["conda-forge", "defaults"]
 platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
 
 [tool.conda-lock.dependencies]
-tdom = { source = "pypi" }
-conda-lock = "*"
 pip = "*"
+tdom = { source = "pypi" }
 python = "3.14"
-setuptools = "*"
-wheel = "*"
+hatchling = "*"
+conda-lock = "*"
+
+[tool.conda-lock.pip-dependencies]
+htmpl = { path = "src", editable = true }

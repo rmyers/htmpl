@@ -29,7 +29,7 @@ from .assets import (
     AssetCollector,
     ComponentFunc,
 )
-from .forms import BaseForm, parse_form_errors
+from .forms import BaseForm, FormLayout, parse_form_errors
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseForm)
@@ -62,12 +62,23 @@ def use_bundles(request: Request) -> AssetCollector:
 
 
 class ParsedForm(BaseModel, Generic[T]):
+    form: type[T]
     data: T | None = None
     values: dict
     errors: dict
+    render_kwargs: dict
+
+    def render(self, values: dict | None = None, errors: dict | None = None):
+        _values = values or self.values
+        _errors = errors or self.errors
+        return self.form.render(
+            values=_values,
+            errors=_errors,
+            **self.render_kwargs,
+        )
 
 
-async def parse_form(request: Request, form: type[T]) -> ParsedForm[T]:
+async def parse_form(request: Request, form: type[T], **render_kwargs) -> ParsedForm[T]:
     if request.method in ("POST", "PUT", "PATCH"):
         form_data = await request.form()
         values = dict(form_data)
@@ -83,14 +94,28 @@ async def parse_form(request: Request, form: type[T]) -> ParsedForm[T]:
             errors = parse_form_errors(e)
             data = None
 
-        return ParsedForm(data=data, values=values, errors=errors)
+        return ParsedForm(
+            form=form,
+            data=data,
+            values=values,
+            errors=errors,
+            render_kwargs=render_kwargs,
+        )
 
-    return ParsedForm(data=None, values={}, errors={})
+    return ParsedForm(
+        form=form, data=None, values={}, errors={}, render_kwargs=render_kwargs
+    )
 
 
-def use_form(form: type[T]) -> ParsedForm[T]:
+def use_form(form: type[T], **render_kwargs) -> ParsedForm[T]:
+    # Santity check for setup, these would result in multple values for x errors in the render function
+    if "values" in render_kwargs:
+        raise ValueError("Cannot pass values in use_form dependency")
+    if "errors" in render_kwargs:
+        raise ValueError("Cannot pass errors in use_form dependency")
+
     async def setup(request: Request) -> ParsedForm[T]:
-        return await parse_form(request, form)
+        return await parse_form(request, form, **render_kwargs)
 
     return Depends(setup)
 

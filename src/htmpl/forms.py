@@ -18,6 +18,7 @@ Usage:
 
 from __future__ import annotations
 
+from string.templatelib import Template
 from typing import Any, Literal,Protocol, TypeVar, cast, get_origin, get_args
 
 from pydantic import BaseModel, ValidationError
@@ -581,6 +582,11 @@ class BaseForm(BaseModel):
         return html(t"<label><input {attrs} />{label}</label>")
 
 
+# Include this after a successful POST to clear data from history
+reset_form: Template = t"""\
+<script>if (window.history.replaceState) {{window.history.replaceState(null, null, window.location.href);}}</script>"""
+
+
 def parse_form_errors(error: ValidationError) -> dict[str, str]:
     """Convert Pydantic ValidationError to field -> message dict."""
     errors = {}
@@ -588,5 +594,6 @@ def parse_form_errors(error: ValidationError) -> dict[str, str]:
         loc = err["loc"]
         if loc:
             field = str(loc[0])
-            errors[field] = err["msg"]
+            msg = err["msg"].removeprefix("Value error, ")
+            errors[field] = msg
     return errors
