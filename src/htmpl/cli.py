@@ -24,7 +24,7 @@ def cli():
 
 
 @cli.command()
-@click.argument("dest", default=".")
+@click.argument("dest")
 @click.option("--version", "-v", help="Template version (git tag)")
 def init(dest: str, version: str | None):
     """Create a new htmpl project."""
